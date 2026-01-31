@@ -31,7 +31,7 @@ graph LR
 
 ---
 
-🚀 Getting Started
+## 🚀 Getting Started
 
 1. Prerequisites
 
@@ -44,7 +44,7 @@ graph LR
 
 
 
-2. Installation
+## 2. Installation
 
 Clone the repository:
 
@@ -54,7 +54,7 @@ cd Mcp.Obsidian
 
 ```
 
-3. Configuration
+## 3. Configuration
 
 Create an `appsettings.json` file in the project root:
 
@@ -97,7 +97,7 @@ To use this with Claude Desktop, add the following to your `claude_desktop_confi
 
 ---
 
-🛠 Available Tools
+## 🛠 Available Tools
 
 The server exposes the following tools to the AI agent:
 
@@ -112,7 +112,7 @@ The server exposes the following tools to the AI agent:
 
 ---
 
-🛡 Security & Permissions
+## 🛡 Security & Permissions
 
 * **Local Execution:** This server runs entirely on your machine. No data is sent to a third-party cloud other than the LLM provider you are already using (e.g., Anthropic).
 * **HTTPS:** The Local REST API uses self-signed certificates. The `VerifySsl: false` setting is required unless you configure local trust.
@@ -120,7 +120,7 @@ The server exposes the following tools to the AI agent:
 
 ---
 
-🗺 Roadmap
+## 🗺 Roadmap
 
 * [x] Basic CRUD (Create, Read, Search, Append).
 * [x] Frontmatter manipulation.
@@ -130,7 +130,7 @@ The server exposes the following tools to the AI agent:
 
 ---
 
-🤝 Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please read the [CONTRIBUTING.md](https://www.google.com/search?q=CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
 
