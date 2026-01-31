@@ -1,5 +1,5 @@
 
-Mcp.Obsidian
+## Mcp.Obsidian
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![.NET Version](https://img.shields.io/badge/.NET-10.0-purple)
