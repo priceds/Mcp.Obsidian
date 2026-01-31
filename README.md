@@ -1,6 +1,4 @@
-I have created the `README.md` file for you. You can download it below.
 
-```markdown:readme.md
 Mcp.Obsidian
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
