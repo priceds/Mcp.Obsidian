@@ -6,7 +6,7 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![MCP Standard](https://img.shields.io/badge/MCP-1.0-orange)
 
-**Mcp.Obsidian** is a Model Context Protocol (MCP) server that bridges AI agents (Claude, Gemini, etc.) with your local Obsidian vault. 
+**Mcp.Obsidian** is a .NET 10 Model Context Protocol (MCP) server that bridges AI agents (Claude, Gemini, etc.) with your local Obsidian vault.
 
 It allows LLMs to read, search, and edit your notes safely using the [Obsidian Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api), keeping your knowledge base local-first while enabling AI automation.
 
@@ -49,14 +49,15 @@ graph LR
 Clone the repository:
 
 ```bash
-git clone [https://github.com/yourusername/Mcp.Obsidian.git](https://github.com/yourusername/Mcp.Obsidian.git)
+git clone https://github.com/yourusername/Mcp.Obsidian.git
 cd Mcp.Obsidian
+cp appsettings.json.example appsettings.json
 
 ```
 
 ## 3. Configuration
 
-Create an `appsettings.json` file in the project root:
+Update `appsettings.json` in the repo root:
 
 ```json
 {
@@ -67,7 +68,7 @@ Create an `appsettings.json` file in the project root:
     }
   },
   "Obsidian": {
-    "BaseUrl": "https://localhost:27123",
+    "BaseUrl": "https://127.0.0.1:27124",
     "ApiKey": "YOUR_OBSIDIAN_API_KEY_HERE",
     "VerifySsl": false
   }
@@ -75,7 +76,33 @@ Create an `appsettings.json` file in the project root:
 
 ```
 
-4. Integration (Claude Desktop)
+You can also configure the server via environment variables:
+
+```bash
+export OBSIDIAN__BASEURL=https://127.0.0.1:27124
+export OBSIDIAN__APIKEY=YOUR_OBSIDIAN_API_KEY_HERE
+export OBSIDIAN__VERIFYSSL=false
+```
+
+## 4. Build
+
+Build the MCP server:
+
+```bash
+dotnet build src/Mcp.Obsidian/Mcp.Obsidian.csproj
+```
+
+Publish a standalone folder for any MCP-compatible client:
+
+```bash
+dotnet publish src/Mcp.Obsidian/Mcp.Obsidian.csproj -c Release -o ./artifacts/obsidian-mcp
+```
+
+## 5. Integration
+
+The server uses the MCP stdio transport, so any MCP-compatible tool that can launch a local command can use it.
+
+### Claude Desktop
 
 To use this with Claude Desktop, add the following to your `claude_desktop_config.json`:
 
@@ -87,12 +114,29 @@ To use this with Claude Desktop, add the following to your `claude_desktop_confi
       "args": [
         "run",
         "--project",
-        "/absolute/path/to/Mcp.Obsidian/src/Mcp.Obsidian/Mcp.Obsidian.csproj"
+        "/absolute/path/to/Mcp.Obsidian/src/Mcp.Obsidian/Mcp.Obsidian.csproj",
+        "--",
+        "--config=/absolute/path/to/Mcp.Obsidian/appsettings.json"
       ]
     }
   }
 }
 
+```
+
+### Generic MCP Client
+
+If your MCP client prefers a built executable, point it to the published binary instead:
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "/absolute/path/to/Mcp.Obsidian/artifacts/obsidian-mcp/Mcp.Obsidian",
+      "args": []
+    }
+  }
+}
 ```
 
 ---
@@ -117,6 +161,7 @@ The server exposes the following tools to the AI agent:
 * **Local Execution:** This server runs entirely on your machine. No data is sent to a third-party cloud other than the LLM provider you are already using (e.g., Anthropic).
 * **HTTPS:** The Local REST API uses self-signed certificates. The `VerifySsl: false` setting is required unless you configure local trust.
 * **Scoped Access:** The server can only access the vault where the Local REST API plugin is active.
+* **Configuration:** Keep `appsettings.json` local to your machine and never commit your Obsidian API key.
 
 ---
 
