@@ -88,13 +88,7 @@ public sealed class MarkdownToolsTests
         var plan = ObsidianMarkdownTools.BuildHeadingAppendPlan(markdown, ["Projects", "Launch"]);
 
         Assert.Null(plan.ExistingTarget);
-        Assert.Equal(
-            """
-            # Projects
-
-            ## Launch
-            """,
-            plan.MissingHeadingMarkdown);
+        Assert.Equal("# Projects\n\n## Launch", NormalizeLineEndings(plan.MissingHeadingMarkdown));
     }
 
     [Fact]
@@ -141,5 +135,10 @@ public sealed class MarkdownToolsTests
         Assert.Single(mentions);
         Assert.Equal("Notes/Todo.md", mentions[0]!["path"]?.GetValue<string>());
         Assert.Contains(aliases, alias => alias?.GetValue<string>() == "HN Launch");
+    }
+
+    private static string? NormalizeLineEndings(string? value)
+    {
+        return value?.Replace("\r\n", "\n", StringComparison.Ordinal);
     }
 }
