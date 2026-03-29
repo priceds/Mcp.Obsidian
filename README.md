@@ -9,12 +9,22 @@
 
 It allows LLMs to read, search, and edit your notes safely using the [Obsidian Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api), keeping your knowledge base local-first while enabling AI automation.
 
+This server is designed to feel much closer to a real Obsidian operator than a thin note CRUD wrapper. It can work with normal vault files, the active note, periodic notes, command execution, vault queries, backlink-aware analysis, and workspace scaffolding.
+
+## What Makes It Different
+
+- It is not limited to file CRUD. It can reason about headings, links, backlinks, periodic notes, and Obsidian commands.
+- It exposes higher-level agent workflows like smart append, daily note automation, and workspace scaffolding.
+- It stays local-first by talking only to your running Obsidian instance through the Local REST API plugin.
+- It is built for any MCP-compatible client that can launch a local process over stdio.
+
 ### Why this is useful
 
 - Keep your notes local while still letting MCP-compatible clients work with them.
 - Give Claude Desktop, Cursor, Gemini, and other MCP tools structured access to your Obsidian vault.
 - Avoid brittle copy-paste workflows by letting agents search, read, create, and update notes directly.
 - Build on top of the widely used Obsidian Local REST API instead of inventing a custom plugin.
+- Cover higher-level workflows like daily notes, heading-aware appends, command execution, and workspace bootstrapping.
 
 > [!NOTE]
 > A demo image is not included in this repository yet, so the placeholder caption has been removed for now.
@@ -148,29 +158,55 @@ If your MCP client prefers a built executable, point it to the published binary 
 5. Restart your MCP client.
 6. Ask the client to call `obsidian_list_files` or `obsidian_search` as a smoke test.
 
+### 6. First Prompts To Try
+
+- "List the top-level files and folders in my vault."
+- "Create `Inbox/HN Launch.md` with a launch checklist."
+- "Append today’s status update to my daily note."
+- "Show me which notes already mention or link to `HackerNews Launch`."
+- "Create a new client workspace called `Acme` with folders and index notes."
+
 ---
 
 ## ✨ Feature Set
 
-This MCP server is designed for the most common note automation workflows:
+This MCP server now covers a much larger slice of what a human can do manually in Obsidian:
 
-- Search a vault when an agent needs to find the right note quickly.
-- Read a note when the agent needs full markdown context.
-- Create a new note from scratch.
-- Append information to an existing note without manually opening Obsidian.
-- Update frontmatter fields for tags, status, metadata, or workflow state.
-- List files in a folder so an agent can navigate your vault safely.
+- Work across three note scopes: vault files, the active note, and periodic notes.
+- Read notes as markdown, parsed note JSON, or a document map for structural reasoning.
+- Create, replace, append, patch, and delete notes instead of stopping at read-only automation.
+- Append under a specific heading path with `obsidian_smart_append`.
+- Patch headings, blocks, or frontmatter fields with fine-grained target operations.
+- Run simple text search plus richer Dataview DQL and JsonLogic vault queries.
+- Inspect outgoing links, backlinks, and plain-text mention opportunities.
+- Open notes in the desktop UI and execute Obsidian commands from MCP.
+- Scaffold workspace folder structures with index notes for new projects or clients.
 
 ## 🛠 Available Tools
 
 | Tool | Description |
 | --- | --- |
-| `obsidian_search` | Uses the REST API to fuzzy search file names and content. |
+| `obsidian_list_files` | Lists files in a folder or at the vault root. |
+| `obsidian_read_resource` | Reads vault, active, or periodic notes as markdown, note JSON, or document map. |
+| `obsidian_write_resource` | Creates or replaces vault, active, or periodic notes. |
+| `obsidian_append_resource` | Appends markdown to vault, active, or periodic notes. |
+| `obsidian_delete_resource` | Deletes vault, active, or periodic notes. |
+| `obsidian_patch_target` | Patches headings, blocks, or frontmatter with append, prepend, or replace. |
+| `obsidian_daily_note` | Shorthand helper for current or dated daily note workflows. |
 | `obsidian_read_note` | Retrieves the full markdown content of a specific note. |
 | `obsidian_create_note` | Creates a new note with specified path and content. |
 | `obsidian_append` | Appends text to the end of an existing note. |
-| `obsidian_patch_frontmatter` | Updates or adds YAML frontmatter tags/metadata. |
-| `obsidian_list_files` | Lists files in a specific folder. |
+| `obsidian_patch_frontmatter` | Updates or adds YAML frontmatter tags and metadata. |
+| `obsidian_search` | Backward-compatible alias for simple vault text search. |
+| `obsidian_search_simple` | Runs text search through the vault. |
+| `obsidian_query_vault` | Runs Dataview DQL or JsonLogic queries through the vault. |
+| `obsidian_extract_links` | Extracts wikilinks, embeds, and markdown links from a note. |
+| `obsidian_backlink_report` | Reports outgoing links, backlinks, and mention candidates. |
+| `obsidian_smart_append` | Appends under a matching heading path or creates it first. |
+| `obsidian_open_note` | Opens a note in Obsidian. |
+| `obsidian_list_commands` | Lists available Obsidian commands. |
+| `obsidian_execute_command` | Executes an Obsidian command by id. |
+| `obsidian_scaffold_workspace` | Scaffolds a new folder-based workspace with index notes. |
 
 ---
 
@@ -181,6 +217,21 @@ This MCP server is designed for the most common note automation workflows:
 - "Append this summary to `Projects/MCP.md`."
 - "Set the frontmatter `status` field in `Tasks/ship-docs.md` to `done`."
 - "List files in my `Daily/` folder before creating today’s note."
+- "Append a standup summary to today’s daily note."
+- "Append these decisions under `Projects::Launch::Decisions`, and create the heading path if it does not exist."
+- "Run a Dataview query for all open tasks tagged `#hn-launch`."
+- "Show me notes that already link to `Projects/HackerNews Launch.md` before creating a duplicate."
+- "Create a fresh client workspace with Inbox, Projects, Resources, Archive, and Daily sections."
+- "Execute the Obsidian command for opening the command palette or templater workflow."
+
+---
+
+## ✅ Quality Checks
+
+- `dotnet build src/Mcp.Obsidian/Mcp.Obsidian.csproj`
+- `dotnet test tests/Mcp.Obsidian.Tests/Mcp.Obsidian.Tests.csproj`
+
+The test suite covers the markdown reasoning helpers behind link extraction, heading-path parsing, smart append planning, and backlink analysis.
 
 ---
 
@@ -199,6 +250,7 @@ This MCP server is designed for the most common note automation workflows:
 - If requests fail with authentication errors, re-copy the API key from Obsidian into `appsettings.json`.
 - If TLS validation fails, keep `VerifySsl` set to `false` unless you have explicitly trusted the local certificate.
 - If your MCP client cannot launch `dotnet run`, publish the app first and point the client at the binary in `artifacts/obsidian-mcp`.
+- If a patch against a heading fails, read the note as `document_map` first to inspect the exact heading path the API expects.
 
 ---
 
@@ -206,9 +258,13 @@ This MCP server is designed for the most common note automation workflows:
 
 * [x] Basic CRUD (Create, Read, Search, Append).
 * [x] Frontmatter manipulation.
-* [ ] **Smart Append:** Append contextually under specific H2/H3 headers.
-* [ ] **Backlink Logic:** AI awareness of existing links before creating new ones.
-* [ ] **Daily Note Helper:** Shorthand tools for modifying the current daily note.
+* [x] **Smart Append:** Append contextually under specific H2/H3 headers.
+* [x] **Backlink Logic:** AI awareness of existing links before creating new ones.
+* [x] **Daily Note Helper:** Shorthand tools for modifying the current daily note.
+* [x] **Command Automation:** List and execute Obsidian commands from MCP.
+* [x] **Workspace Scaffolding:** Bootstrap project or client workspaces with structured folders and notes.
+* [ ] **Templates and Capture Flows:** First-class helpers around templater-style workflows.
+* [ ] **Graph-Aware Planning:** Deeper link graph reasoning before large note rewrites.
 
 ---
 

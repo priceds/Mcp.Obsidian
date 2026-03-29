@@ -32,15 +32,33 @@ internal sealed class ObsidianRestClient : IDisposable
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mcp.Obsidian/1.0");
     }
 
-    public async Task<string> ReadNoteAsync(string path, CancellationToken cancellationToken)
+    public async Task<JsonNode?> ReadResourceAsync(
+        ObsidianResource resource,
+        ObsidianReadFormat format,
+        CancellationToken cancellationToken)
     {
-        using var response = await _httpClient.GetAsync(BuildVaultPath(path), cancellationToken);
-        return await ReadTextResponseAsync(response, cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildResourceRoute(resource));
+        request.Headers.Accept.Clear();
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(format switch
+        {
+            ObsidianReadFormat.Markdown => "text/markdown",
+            ObsidianReadFormat.NoteJson => "application/vnd.olrapi.note+json",
+            ObsidianReadFormat.DocumentMap => "application/vnd.olrapi.document-map+json",
+            _ => "text/markdown",
+        }));
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        return format == ObsidianReadFormat.Markdown
+            ? JsonValue.Create(await ReadTextResponseAsync(response, cancellationToken))
+            : await ReadJsonResponseAsync(response, cancellationToken);
     }
 
-    public async Task<string> CreateOrReplaceNoteAsync(string path, string content, CancellationToken cancellationToken)
+    public async Task<string> WriteResourceAsync(
+        ObsidianResource resource,
+        string content,
+        CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Put, BuildVaultPath(path))
+        using var request = new HttpRequestMessage(HttpMethod.Put, BuildResourceRoute(resource))
         {
             Content = new StringContent(content, Encoding.UTF8, "text/markdown"),
         };
@@ -49,9 +67,75 @@ internal sealed class ObsidianRestClient : IDisposable
         return await ReadTextResponseAsync(response, cancellationToken);
     }
 
-    public async Task<JsonNode?> SearchSimpleAsync(string query, CancellationToken cancellationToken)
+    public async Task<string> AppendResourceAsync(
+        ObsidianResource resource,
+        string content,
+        CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"search/simple/?query={Uri.EscapeDataString(query)}");
+        using var request = new HttpRequestMessage(HttpMethod.Post, BuildResourceRoute(resource))
+        {
+            Content = new StringContent(content, Encoding.UTF8, "text/markdown"),
+        };
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        return await ReadTextResponseAsync(response, cancellationToken);
+    }
+
+    public async Task DeleteResourceAsync(ObsidianResource resource, CancellationToken cancellationToken)
+    {
+        using var response = await _httpClient.DeleteAsync(BuildResourceRoute(resource), cancellationToken);
+        var body = await ReadResponseBodyAsync(response, cancellationToken);
+        EnsureSuccess(response, body);
+    }
+
+    public async Task<string> PatchResourceAsync(
+        ObsidianResource resource,
+        ObsidianPatchRequest patch,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Patch, BuildResourceRoute(resource))
+        {
+            Content = new StringContent(SerializePatchContent(patch.Content, patch.ContentType), Encoding.UTF8, patch.ContentType),
+        };
+        request.Headers.TryAddWithoutValidation("Operation", patch.Operation);
+        request.Headers.TryAddWithoutValidation("Target-Type", patch.TargetType);
+        request.Headers.TryAddWithoutValidation("Target", patch.Target);
+        request.Headers.TryAddWithoutValidation("Target-Delimiter", patch.Delimiter);
+        request.Headers.TryAddWithoutValidation("Trim-Target-Whitespace", patch.TrimTargetWhitespace ? "true" : "false");
+        request.Headers.TryAddWithoutValidation("Create-Target-If-Missing", patch.CreateTargetIfMissing ? "true" : "false");
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        return await ReadTextResponseAsync(response, cancellationToken);
+    }
+
+    public async Task<JsonNode?> SearchSimpleAsync(string query, int? contextLength, CancellationToken cancellationToken)
+    {
+        var route = $"search/simple/?query={Uri.EscapeDataString(query)}";
+        if (contextLength is not null)
+        {
+            route += $"&contextLength={contextLength.Value}";
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, route);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        return await ReadJsonResponseAsync(response, cancellationToken);
+    }
+
+    public async Task<JsonNode?> QueryVaultAsync(ObsidianSearchQuery query, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "search/")
+        {
+            Content = query.Language switch
+            {
+                "dataview" => new StringContent(query.TextQuery ?? string.Empty, Encoding.UTF8, "application/vnd.olrapi.dataview.dql+txt"),
+                "jsonlogic" => new StringContent(
+                    query.JsonLogicQuery?.ToJsonString(JsonOptions) ?? "{}",
+                    Encoding.UTF8,
+                    "application/vnd.olrapi.jsonlogic+json"),
+                _ => throw new InvalidOperationException($"Unsupported search language '{query.Language}'."),
+            },
+        };
+
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         return await ReadJsonResponseAsync(response, cancellationToken);
     }
@@ -67,57 +151,28 @@ internal sealed class ObsidianRestClient : IDisposable
         return await ReadJsonResponseAsync(response, cancellationToken);
     }
 
-    public async Task<string> AppendToNoteAsync(string path, string content, CancellationToken cancellationToken)
+    public async Task<JsonNode?> ListCommandsAsync(CancellationToken cancellationToken)
     {
-        var existingContent = await ReadNoteAsync(path, cancellationToken);
-        var needsSeparator = existingContent.Length > 0 &&
-                             !existingContent.EndsWith('\n') &&
-                             !content.StartsWith('\n');
-        var newContent = needsSeparator
-            ? $"{existingContent}\n{content}"
-            : $"{existingContent}{content}";
-
-        await CreateOrReplaceNoteAsync(path, newContent, cancellationToken);
-        return newContent;
+        using var response = await _httpClient.GetAsync("commands/", cancellationToken);
+        return await ReadJsonResponseAsync(response, cancellationToken);
     }
 
-    public async Task<JsonArray> PatchFrontmatterAsync(
-        string path,
-        JsonObject updates,
-        CancellationToken cancellationToken)
+    public async Task ExecuteCommandAsync(string commandId, CancellationToken cancellationToken)
     {
-        var results = new JsonArray();
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"commands/{Uri.EscapeDataString(commandId)}/");
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var body = await ReadResponseBodyAsync(response, cancellationToken);
+        EnsureSuccess(response, body);
+    }
 
-        foreach (var update in updates)
-        {
-            if (update.Key is null || update.Value is null)
-            {
-                continue;
-            }
-
-            using var request = new HttpRequestMessage(HttpMethod.Patch, BuildVaultPath(path))
-            {
-                Content = new StringContent(
-                    update.Value.ToJsonString(JsonOptions),
-                    Encoding.UTF8,
-                    "application/json"),
-            };
-            request.Headers.TryAddWithoutValidation("Operation", "replace");
-            request.Headers.TryAddWithoutValidation("Target-Type", "frontmatter");
-            request.Headers.TryAddWithoutValidation("Target", update.Key);
-
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            var body = await ReadResponseBodyAsync(response, cancellationToken);
-            EnsureSuccess(response, body);
-
-            results.Add(new JsonObject
-            {
-                ["field"] = update.Key,
-                ["result"] = string.IsNullOrWhiteSpace(body) ? "updated" : body,
-            });
-        }
-
-        return results;
+    public async Task OpenNoteAsync(string path, bool newLeaf, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"open/{EncodePathSegments(path.Trim().TrimStart('/'))}?newLeaf={(newLeaf ? "true" : "false")}");
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var body = await ReadResponseBodyAsync(response, cancellationToken);
+        EnsureSuccess(response, body);
     }
 
     public void Dispose()
@@ -125,15 +180,56 @@ internal sealed class ObsidianRestClient : IDisposable
         _httpClient.Dispose();
     }
 
-    private static string BuildVaultPath(string path)
+    private static string BuildResourceRoute(ObsidianResource resource)
     {
-        var trimmedPath = path.Trim().TrimStart('/');
-        if (string.IsNullOrWhiteSpace(trimmedPath))
+        return resource.Scope switch
         {
-            throw new InvalidOperationException("A note path is required.");
+            "vault" => $"vault/{EncodePathSegments(RequirePath(resource.Path))}",
+            "active" => "active/",
+            "periodic" => BuildPeriodicRoute(resource),
+            _ => throw new InvalidOperationException($"Unsupported resource scope '{resource.Scope}'."),
+        };
+    }
+
+    private static string BuildPeriodicRoute(ObsidianResource resource)
+    {
+        var period = string.IsNullOrWhiteSpace(resource.Period) ? "daily" : resource.Period.Trim().ToLowerInvariant();
+        var allowed = new[] { "daily", "weekly", "monthly", "quarterly", "yearly" };
+        if (!allowed.Contains(period, StringComparer.Ordinal))
+        {
+            throw new InvalidOperationException($"Unsupported periodic note period '{period}'.");
         }
 
-        return $"vault/{EncodePathSegments(trimmedPath)}";
+        if (resource.Date is null)
+        {
+            return $"periodic/{period}/";
+        }
+
+        var date = resource.Date.Value;
+        return $"periodic/{period}/{date.Year}/{date.Month}/{date.Day}/";
+    }
+
+    private static string RequirePath(string? path)
+    {
+        var trimmedPath = path?.Trim().TrimStart('/');
+        if (string.IsNullOrWhiteSpace(trimmedPath))
+        {
+            throw new InvalidOperationException("A vault-relative path is required.");
+        }
+
+        return trimmedPath;
+    }
+
+    private static string SerializePatchContent(JsonNode? content, string contentType)
+    {
+        if (content is null)
+        {
+            return string.Empty;
+        }
+
+        return contentType.Equals("application/json", StringComparison.OrdinalIgnoreCase)
+            ? content.ToJsonString(JsonOptions)
+            : content.GetValue<string>();
     }
 
     private static string EncodePathSegments(string path)
@@ -176,12 +272,4 @@ internal sealed class ObsidianRestClient : IDisposable
 
         throw new ObsidianApiException(response.StatusCode, body);
     }
-}
-
-internal sealed class ObsidianApiException(HttpStatusCode statusCode, string responseBody)
-    : Exception($"Obsidian API request failed with {(int)statusCode} {statusCode}. {responseBody}".Trim())
-{
-    public HttpStatusCode StatusCode { get; } = statusCode;
-
-    public string ResponseBody { get; } = responseBody;
 }

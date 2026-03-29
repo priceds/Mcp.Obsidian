@@ -70,7 +70,7 @@ internal sealed class McpServer
                         ["name"] = "Mcp.Obsidian",
                         ["version"] = "1.0.0",
                     },
-                    ["instructions"] = "Use the Obsidian tools to search, read, create, append, patch frontmatter, and list files in the local vault.",
+                    ["instructions"] = "Use the Obsidian tools to work across vault, active, and periodic notes; query with search and Dataview or JsonLogic; patch headings or frontmatter; inspect links and backlinks; open notes, run commands, and scaffold new workspaces.",
                 }, cancellationToken);
                 break;
             case "notifications/initialized":
