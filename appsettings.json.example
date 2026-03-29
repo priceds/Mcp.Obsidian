@@ -1,0 +1,7 @@
+{
+  "Obsidian": {
+    "BaseUrl": "https://127.0.0.1:27124",
+    "ApiKey": "YOUR_OBSIDIAN_API_KEY_HERE",
+    "VerifySsl": false
+  }
+}
