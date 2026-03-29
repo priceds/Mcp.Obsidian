@@ -8,6 +8,11 @@
     <AssemblyName>Mcp.Obsidian</AssemblyName>
     <RootNamespace>Mcp.Obsidian</RootNamespace>
     <LangVersion>preview</LangVersion>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>embedded</DebugType>
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>

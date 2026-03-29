@@ -63,7 +63,20 @@ Install and enable the Obsidian plugin:
 4. Open the plugin settings.
 5. Copy the API key.
 
-### 2. Clone and Configure
+### 2. Install A Binary Or Build From Source
+
+#### Option A: Download a Prebuilt Release
+
+Go to the GitHub Releases page and download the archive for your platform:
+
+- `Mcp.Obsidian-linux-x64.tar.gz`
+- `Mcp.Obsidian-linux-arm64.tar.gz`
+- `Mcp.Obsidian-win-x64.zip`
+- `Mcp.Obsidian-osx-arm64.tar.gz`
+
+Unpack it anywhere on your machine, then create an `appsettings.json` file next to the binary or provide the equivalent environment variables.
+
+#### Option B: Build From Source
 
 Clone the repository and create your local config:
 
@@ -94,7 +107,7 @@ export OBSIDIAN__APIKEY=YOUR_OBSIDIAN_API_KEY_HERE
 export OBSIDIAN__VERIFYSSL=false
 ```
 
-### 3. Build
+### 3. Build Or Publish Locally
 
 Build the MCP server:
 
@@ -102,10 +115,21 @@ Build the MCP server:
 dotnet build src/Mcp.Obsidian/Mcp.Obsidian.csproj
 ```
 
-Publish a standalone folder for any MCP-compatible client:
+Publish a standalone folder for the current machine:
 
 ```bash
 dotnet publish src/Mcp.Obsidian/Mcp.Obsidian.csproj -c Release -o ./artifacts/obsidian-mcp
+```
+
+Publish a single-file binary for a specific platform:
+
+```bash
+dotnet publish src/Mcp.Obsidian/Mcp.Obsidian.csproj \
+  -c Release \
+  -r linux-x64 \
+  -p:PublishSingleFile=true \
+  -p:SelfContained=true \
+  -o ./artifacts/linux-x64
 ```
 
 ### 4. Connect It To Your MCP Client
@@ -149,11 +173,24 @@ If your MCP client prefers a built executable, point it to the published binary 
 }
 ```
 
+Windows example:
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "C:\\absolute\\path\\to\\Mcp.Obsidian.exe",
+      "args": []
+    }
+  }
+}
+```
+
 ### 5. Quick Start Checklist
 
 1. Start Obsidian and make sure the `Local REST API` plugin is enabled.
 2. Confirm your API key is present in `appsettings.json` or environment variables.
-3. Run `dotnet build src/Mcp.Obsidian/Mcp.Obsidian.csproj`.
+3. Download a release asset or run `dotnet build src/Mcp.Obsidian/Mcp.Obsidian.csproj`.
 4. Add the MCP server entry to your client config.
 5. Restart your MCP client.
 6. Ask the client to call `obsidian_list_files` or `obsidian_search` as a smoke test.
@@ -230,8 +267,25 @@ This MCP server now covers a much larger slice of what a human can do manually i
 
 - `dotnet build src/Mcp.Obsidian/Mcp.Obsidian.csproj`
 - `dotnet test tests/Mcp.Obsidian.Tests/Mcp.Obsidian.Tests.csproj`
+- GitHub Actions release workflow builds release assets for `linux-x64`, `linux-arm64`, `win-x64`, and `osx-arm64`
 
 The test suite covers the markdown reasoning helpers behind link extraction, heading-path parsing, smart append planning, and backlink analysis.
+
+## 📦 Releases
+
+This repository includes a GitHub Actions workflow at [.github/workflows/release.yml](/Users/sarvesh/Mcp.Obsidian/.github/workflows/release.yml) that:
+
+- runs tests
+- publishes single-file self-contained binaries
+- packages artifacts for Linux x64, Linux arm64, Windows x64, and macOS Apple Silicon
+- uploads those assets to a GitHub Release when you push a tag like `v0.1.0`
+
+To cut a release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ---
 
