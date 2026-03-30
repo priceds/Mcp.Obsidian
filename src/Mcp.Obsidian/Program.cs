@@ -11,7 +11,7 @@ internal static class Program
         {
             var settings = ObsidianSettings.Load(args);
             var client = new ObsidianRestClient(settings);
-            var toolRegistry = new ObsidianToolRegistry(client);
+            var toolRegistry = new ObsidianToolRegistry(client, settings);
             var server = new McpServer(toolRegistry, Console.OpenStandardInput(), Console.OpenStandardOutput(), Console.Error);
 
             await server.RunAsync(CancellationToken.None);

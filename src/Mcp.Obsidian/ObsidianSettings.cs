@@ -10,6 +10,8 @@ internal sealed class ObsidianSettings
 
     public bool VerifySsl { get; init; } = false;
 
+    public SemanticSearchSettings SemanticSearch { get; init; } = new();
+
     public static ObsidianSettings Load(string[] args)
     {
         var jsonPath = GetConfigPath(args);
@@ -44,12 +46,18 @@ internal sealed class ObsidianSettings
             section: obsidianSection,
             propertyName: "VerifySsl",
             fallback: false);
+        var semanticSection = TryGetProperty(root, "SemanticSearch");
 
         return new ObsidianSettings
         {
             BaseUrl = baseUrl.TrimEnd('/'),
             ApiKey = apiKey,
             VerifySsl = verifySsl,
+            SemanticSearch = new SemanticSearchSettings
+            {
+                ModelDirectory = GetOptionalSetting("SEMANTICSEARCH__MODELDIRECTORY", semanticSection, "ModelDirectory"),
+                MaxSequenceLength = GetIntSetting("SEMANTICSEARCH__MAXSEQUENCELENGTH", semanticSection, "MaxSequenceLength", 256),
+            },
         };
     }
 
@@ -121,6 +129,28 @@ internal sealed class ObsidianSettings
         throw new InvalidOperationException($"Missing required configuration value for Obsidian:{propertyName}.");
     }
 
+    private static string? GetOptionalSetting(
+        string environmentVariable,
+        JsonElement? section,
+        string propertyName)
+    {
+        var environmentValue = Environment.GetEnvironmentVariable(environmentVariable);
+        if (!string.IsNullOrWhiteSpace(environmentValue))
+        {
+            return environmentValue;
+        }
+
+        if (section is { ValueKind: JsonValueKind.Object } jsonSection &&
+            jsonSection.TryGetProperty(propertyName, out var propertyValue) &&
+            propertyValue.ValueKind == JsonValueKind.String &&
+            !string.IsNullOrWhiteSpace(propertyValue.GetString()))
+        {
+            return propertyValue.GetString();
+        }
+
+        return null;
+    }
+
     private static bool GetBoolSetting(
         string environmentVariable,
         JsonElement? section,
@@ -142,4 +172,34 @@ internal sealed class ObsidianSettings
 
         return fallback;
     }
+
+    private static int GetIntSetting(
+        string environmentVariable,
+        JsonElement? section,
+        string propertyName,
+        int fallback)
+    {
+        var environmentValue = Environment.GetEnvironmentVariable(environmentVariable);
+        if (!string.IsNullOrWhiteSpace(environmentValue) && int.TryParse(environmentValue, out var parsedEnvironmentValue))
+        {
+            return parsedEnvironmentValue;
+        }
+
+        if (section is { ValueKind: JsonValueKind.Object } jsonSection &&
+            jsonSection.TryGetProperty(propertyName, out var propertyValue) &&
+            propertyValue.ValueKind == JsonValueKind.Number &&
+            propertyValue.TryGetInt32(out var parsedPropertyValue))
+        {
+            return parsedPropertyValue;
+        }
+
+        return fallback;
+    }
+}
+
+internal sealed class SemanticSearchSettings
+{
+    public string? ModelDirectory { get; init; }
+
+    public int MaxSequenceLength { get; init; } = 256;
 }

@@ -6,7 +6,7 @@ using System.Text.Json.Nodes;
 
 namespace Mcp.Obsidian;
 
-internal sealed class ObsidianRestClient : IDisposable
+internal sealed class ObsidianRestClient : IDisposable, IObsidianClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {

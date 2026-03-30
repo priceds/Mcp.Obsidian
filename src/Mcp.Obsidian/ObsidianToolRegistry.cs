@@ -10,11 +10,13 @@ internal sealed class ObsidianToolRegistry
         WriteIndented = true,
     };
 
-    private readonly ObsidianRestClient _client;
+    private readonly IObsidianClient _client;
+    private readonly ObsidianVaultService _vaultService;
 
-    public ObsidianToolRegistry(ObsidianRestClient client)
+    public ObsidianToolRegistry(IObsidianClient client, ObsidianSettings settings)
     {
         _client = client;
+        _vaultService = new ObsidianVaultService(client, settings);
     }
 
     public JsonArray ListTools()
@@ -152,6 +154,51 @@ internal sealed class ObsidianToolRegistry
                 ["welcome_note_name"] = StringProperty("Root welcome note name, default README.md."),
                 ["include_daily_notes_folder"] = BoolProperty("Add a Daily folder to the scaffold."),
             }, "root_folder")),
+            Tool("obsidian_list_all_tags", "Scan the vault and return all tags found in frontmatter and inline hashtag usage.", Schema(new JsonObject())),
+            Tool("obsidian_move_note", "Move a note to a new vault path and optionally rewrite wikilinks in other notes.", Schema(new JsonObject
+            {
+                ["from"] = StringProperty("Current vault-relative note path."),
+                ["to"] = StringProperty("New vault-relative note path."),
+                ["update_links"] = BoolProperty("Rewrite matching wikilinks in other notes."),
+            }, "from", "to")),
+            Tool("obsidian_get_vault_stats", "Compute vault-wide note, folder, size, tag, orphan, and recent modification statistics.", Schema(new JsonObject
+            {
+                ["recent_count"] = IntegerProperty("How many recently modified notes to return."),
+            })),
+            Tool("obsidian_batch_read", "Read many notes concurrently with optional content and frontmatter.", Schema(new JsonObject
+            {
+                ["paths"] = new JsonObject
+                {
+                    ["type"] = "array",
+                    ["items"] = new JsonObject { ["type"] = "string" },
+                    ["description"] = "Vault-relative note paths to read.",
+                },
+                ["include_content"] = BoolProperty("Include markdown content in the response."),
+                ["include_frontmatter"] = BoolProperty("Include frontmatter metadata in the response."),
+            }, "paths")),
+            Tool("obsidian_extract_tasks", "Extract markdown task items across the vault or a folder, including due dates, priorities, and tags.", Schema(new JsonObject
+            {
+                ["folder"] = StringProperty("Optional vault-relative folder filter."),
+                ["completed"] = BoolProperty("Filter by completed or incomplete tasks."),
+            })),
+            Tool("obsidian_list_broken_links", "Find wikilinks that do not resolve to any note title in the vault.", Schema(new JsonObject())),
+            Tool("obsidian_read_canvas", "Read an Obsidian .canvas file and return its nodes and edges.", Schema(new JsonObject
+            {
+                ["path"] = StringProperty("Vault-relative path to a .canvas file."),
+            }, "path")),
+            Tool("obsidian_vault_health", "Generate a health report with vault stats, broken links, duplicate titles, orphan notes, large files, and tags.", Schema(new JsonObject())),
+            Tool("obsidian_search_semantic", "Search the vault with chunked relevance ranking that blends lexical overlap, metadata signals, and fuzzy similarity.", Schema(new JsonObject
+            {
+                ["query"] = StringProperty("Natural-language search query."),
+                ["limit"] = IntegerProperty("Maximum number of ranked results to return."),
+                ["min_score"] = NumberProperty("Minimum normalized score from 0 to 1."),
+            }, "query")),
+            Tool("obsidian_bulk_frontmatter", "Update frontmatter fields across multiple notes filtered by folder and/or tag.", Schema(new JsonObject
+            {
+                ["folder"] = StringProperty("Optional vault-relative folder filter."),
+                ["tag"] = StringProperty("Optional tag filter, with or without the leading #."),
+                ["updates"] = ObjectProperty("Frontmatter fields to apply to each matching note."),
+            }, "updates")),
 
             Tool("obsidian_read_note", "Backward-compatible alias for reading a vault note as markdown.", Schema(new JsonObject
             {
@@ -201,6 +248,39 @@ internal sealed class ObsidianToolRegistry
                 "obsidian_backlink_report" => await BuildBacklinkReportAsync(arguments, cancellationToken),
                 "obsidian_smart_append" => await SmartAppendAsync(arguments, cancellationToken),
                 "obsidian_scaffold_workspace" => await ScaffoldWorkspaceAsync(arguments, cancellationToken),
+                "obsidian_list_all_tags" => Success(JsonSerializer.SerializeToNode(await _vaultService.ListAllTagsAsync(cancellationToken), JsonOptions)),
+                "obsidian_move_note" => Success(JsonSerializer.SerializeToNode(await _vaultService.MoveNoteAsync(
+                    GetRequiredString(arguments, "from"),
+                    GetRequiredString(arguments, "to"),
+                    GetOptionalBool(arguments, "update_links") ?? false,
+                    cancellationToken), JsonOptions)),
+                "obsidian_get_vault_stats" => Success(JsonSerializer.SerializeToNode(await _vaultService.GetVaultStatsAsync(
+                    GetOptionalInt(arguments, "recent_count") ?? 10,
+                    cancellationToken), JsonOptions)),
+                "obsidian_batch_read" => Success(JsonSerializer.SerializeToNode(await _vaultService.BatchReadAsync(
+                    GetRequiredStringArray(arguments, "paths"),
+                    GetOptionalBool(arguments, "include_content") ?? false,
+                    GetOptionalBool(arguments, "include_frontmatter") ?? true,
+                    cancellationToken), JsonOptions)),
+                "obsidian_extract_tasks" => Success(JsonSerializer.SerializeToNode(await _vaultService.ExtractTasksAsync(
+                    GetOptionalString(arguments, "folder"),
+                    GetOptionalBool(arguments, "completed"),
+                    cancellationToken), JsonOptions)),
+                "obsidian_list_broken_links" => Success(JsonSerializer.SerializeToNode(await _vaultService.ListBrokenLinksAsync(cancellationToken), JsonOptions)),
+                "obsidian_read_canvas" => Success(JsonSerializer.SerializeToNode(await _vaultService.ReadCanvasAsync(
+                    GetRequiredString(arguments, "path"),
+                    cancellationToken), JsonOptions)),
+                "obsidian_vault_health" => Success(JsonSerializer.SerializeToNode(await _vaultService.GetVaultHealthAsync(cancellationToken), JsonOptions)),
+                "obsidian_search_semantic" => Success(JsonSerializer.SerializeToNode(await _vaultService.SearchSemanticAsync(
+                    GetRequiredString(arguments, "query"),
+                    GetOptionalInt(arguments, "limit") ?? 10,
+                    GetOptionalFloat(arguments, "min_score") ?? 0.35f,
+                    cancellationToken), JsonOptions)),
+                "obsidian_bulk_frontmatter" => Success(JsonSerializer.SerializeToNode(await _vaultService.BulkFrontmatterAsync(
+                    GetOptionalString(arguments, "folder"),
+                    GetOptionalString(arguments, "tag"),
+                    GetRequiredObject(arguments, "updates"),
+                    cancellationToken), JsonOptions)),
                 "obsidian_read_note" => Success(await _client.ReadResourceAsync(
                     new ObsidianResource("vault", GetRequiredString(arguments, "path")),
                     ObsidianReadFormat.Markdown,
@@ -612,6 +692,12 @@ internal sealed class ObsidianToolRegistry
         ["description"] = description,
     };
 
+    private static JsonObject NumberProperty(string description) => new()
+    {
+        ["type"] = "number",
+        ["description"] = description,
+    };
+
     private static JsonObject BoolProperty(string description) => new()
     {
         ["type"] = "boolean",
@@ -755,6 +841,11 @@ internal sealed class ObsidianToolRegistry
         return arguments[name]?.GetValue<bool>();
     }
 
+    private static float? GetOptionalFloat(JsonObject arguments, string name)
+    {
+        return arguments[name]?.GetValue<float>();
+    }
+
     private static JsonObject GetRequiredObject(JsonObject arguments, string name)
     {
         return arguments[name] as JsonObject
@@ -764,6 +855,22 @@ internal sealed class ObsidianToolRegistry
     private static JsonArray? GetOptionalArray(JsonObject arguments, string name)
     {
         return arguments[name] as JsonArray;
+    }
+
+    private static IReadOnlyList<string> GetRequiredStringArray(JsonObject arguments, string name)
+    {
+        var items = GetOptionalArray(arguments, name)?
+            .Select(static item => item?.GetValue<string>()?.Trim())
+            .Where(static item => !string.IsNullOrWhiteSpace(item))
+            .Cast<string>()
+            .ToArray();
+
+        if (items is null || items.Length == 0)
+        {
+            throw new InvalidOperationException($"Argument '{name}' must be a non-empty array of strings.");
+        }
+
+        return items;
     }
 
     private static DateOnly? ParseOptionalDate(JsonObject arguments, string name)

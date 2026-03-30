@@ -234,6 +234,182 @@ internal static partial class ObsidianMarkdownTools
         };
     }
 
+    public static IReadOnlyList<TaskItem> ExtractTasks(string sourcePath, string markdown)
+    {
+        var tasks = new List<TaskItem>();
+        var inFence = false;
+        var lines = markdown.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index];
+            if (CodeFenceRegex().IsMatch(line))
+            {
+                inFence = !inFence;
+                continue;
+            }
+
+            if (inFence)
+            {
+                continue;
+            }
+
+            var match = TaskRegex().Match(line);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var text = match.Groups["text"].Value.Trim();
+            var dueDate = ParseDueDate(text);
+            var priority = ParsePriority(text);
+            var tags = InlineTagRegex().Matches(text)
+                .Select(static item => item.Groups["tag"].Value)
+                .Where(static tag => tag.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(static tag => tag, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            tasks.Add(new TaskItem(
+                sourcePath,
+                index + 1,
+                text,
+                string.Equals(match.Groups["done"].Value.Trim(), "x", StringComparison.OrdinalIgnoreCase),
+                dueDate,
+                priority,
+                tags));
+        }
+
+        return tasks;
+    }
+
+    public static IReadOnlyCollection<string> ExtractInlineTags(string markdown)
+    {
+        var tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var inFence = false;
+
+        foreach (var rawLine in markdown.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            if (CodeFenceRegex().IsMatch(rawLine))
+            {
+                inFence = !inFence;
+                continue;
+            }
+
+            if (inFence)
+            {
+                continue;
+            }
+
+            foreach (Match match in InlineTagRegex().Matches(rawLine))
+            {
+                var tag = match.Groups["tag"].Value.Trim();
+                if (tag.Length > 0)
+                {
+                    tags.Add(tag);
+                }
+            }
+        }
+
+        return tags;
+    }
+
+    public static IReadOnlyList<BrokenLink> FindBrokenLinks(string sourcePath, string markdown, IReadOnlySet<string> existingTargets)
+    {
+        var broken = new List<BrokenLink>();
+        var lines = markdown.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            foreach (Match match in WikiLinkRegex().Matches(lines[index]))
+            {
+                var rawTarget = match.Groups["target"].Value.Trim();
+                var linkTarget = rawTarget.Split('|', 2)[0].Trim();
+                var normalized = NormalizeInternalLinkTarget(linkTarget);
+                if (normalized.Length == 0 || existingTargets.Contains(normalized))
+                {
+                    continue;
+                }
+
+                broken.Add(new BrokenLink(sourcePath, linkTarget, index + 1));
+            }
+        }
+
+        return broken;
+    }
+
+    public static string RewriteWikiLinks(string markdown, string oldPath, string newPath)
+    {
+        var oldNormalizedPath = NormalizeInternalLinkTarget(oldPath);
+        var oldTitle = NormalizeInternalLinkTarget(Path.GetFileNameWithoutExtension(oldPath));
+        var oldReferenceTargets = new HashSet<string>(StringComparer.Ordinal)
+        {
+            oldNormalizedPath,
+            oldTitle,
+        };
+        var newReferenceBase = Path.GetFileNameWithoutExtension(newPath);
+
+        return WikiLinkRegex().Replace(markdown, match =>
+        {
+            var originalTarget = match.Groups["target"].Value;
+            var isEmbed = match.Value.StartsWith("![[", StringComparison.Ordinal);
+            var parts = originalTarget.Split('|', 2);
+            var linkTarget = parts[0].Trim();
+            var display = parts.Length > 1 ? parts[1] : null;
+
+            var headingFragment = string.Empty;
+            var headingIndex = linkTarget.IndexOf('#');
+            if (headingIndex >= 0)
+            {
+                headingFragment = linkTarget[headingIndex..];
+                linkTarget = linkTarget[..headingIndex];
+            }
+
+            var normalized = NormalizeInternalLinkTarget(linkTarget);
+            if (!oldReferenceTargets.Contains(normalized))
+            {
+                return match.Value;
+            }
+
+            var rebuiltTarget = $"{newReferenceBase}{headingFragment}";
+            if (!string.IsNullOrWhiteSpace(display))
+            {
+                rebuiltTarget = $"{rebuiltTarget}|{display}";
+            }
+
+            return $"{(isEmbed ? "!" : string.Empty)}[[{rebuiltTarget}]]";
+        });
+    }
+
+    public static IReadOnlyCollection<string> ExtractFrontmatterTags(JsonNode? frontmatter)
+    {
+        if (frontmatter is not JsonObject obj)
+        {
+            return [];
+        }
+
+        if (!obj.TryGetPropertyValue("tags", out var tagsNode) || tagsNode is null)
+        {
+            return [];
+        }
+
+        return tagsNode switch
+        {
+            JsonArray array => array
+                .Select(static item => item?.GetValue<string>()?.Trim())
+                .Where(static item => !string.IsNullOrWhiteSpace(item))
+                .Select(NormalizeTag)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            JsonValue value when value.TryGetValue<string>(out var text) => text
+                .Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(NormalizeTag)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            _ => [],
+        };
+    }
+
     private static bool ContainsPlainMention(string content, IReadOnlyCollection<string> names)
     {
         foreach (var name in names)
@@ -296,11 +472,62 @@ internal static partial class ObsidianMarkdownTools
         return value.Trim().ToLowerInvariant();
     }
 
+    private static string NormalizeTag(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var tag = value.Trim();
+        return tag.StartsWith('#') ? tag[1..] : tag;
+    }
+
+    private static DateOnly? ParseDueDate(string value)
+    {
+        var match = DueDateRegex().Match(value);
+        return match.Success && DateOnly.TryParse(match.Groups["date"].Value, out var dueDate)
+            ? dueDate
+            : null;
+    }
+
+    private static string? ParsePriority(string value)
+    {
+        if (value.Contains("⏫", StringComparison.Ordinal))
+        {
+            return "high";
+        }
+
+        if (value.Contains("🔼", StringComparison.Ordinal))
+        {
+            return "medium";
+        }
+
+        if (value.Contains("🔽", StringComparison.Ordinal))
+        {
+            return "low";
+        }
+
+        return null;
+    }
+
     [GeneratedRegex(@"!?\[\[(?<target>[^\]]+)\]\]", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
     private static partial Regex WikiLinkRegex();
 
     [GeneratedRegex(@"\[(?<text>[^\]]+)\]\((?<url>[^)]+)\)", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
     private static partial Regex MarkdownLinkRegex();
+
+    [GeneratedRegex(@"^\s*```", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex CodeFenceRegex();
+
+    [GeneratedRegex(@"^\s*[-*]\s+\[(?<done>[ xX])\]\s+(?<text>.+)$", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex TaskRegex();
+
+    [GeneratedRegex(@"(?<![\w`])#(?<tag>[A-Za-z0-9][A-Za-z0-9_/\-]*)", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex InlineTagRegex();
+
+    [GeneratedRegex(@"📅\s*(?<date>\d{4}-\d{2}-\d{2})", RegexOptions.Compiled | RegexOptions.CultureInvariant)]
+    private static partial Regex DueDateRegex();
 
     private sealed record HeadingEntry(string Path, IReadOnlyList<string> NormalizedPath);
 }
