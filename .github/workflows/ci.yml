@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            rid: linux-x64
+          - runner: ubuntu-latest
+            rid: linux-arm64
+          - runner: windows-latest
+            rid: win-x64
+          - runner: macos-14
+            rid: osx-arm64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore test dependencies
+        run: dotnet restore tests/Mcp.Obsidian.Tests/Mcp.Obsidian.Tests.csproj
+
+      - name: Test
+        run: dotnet test tests/Mcp.Obsidian.Tests/Mcp.Obsidian.Tests.csproj --configuration Release --no-restore
+
+      - name: Restore publish dependencies
+        run: dotnet restore src/Mcp.Obsidian/Mcp.Obsidian.csproj --runtime ${{ matrix.rid }}
+
+      - name: Publish
+        run: >
+          dotnet publish src/Mcp.Obsidian/Mcp.Obsidian.csproj
+          --configuration Release
+          --runtime ${{ matrix.rid }}
+          --no-restore
+          -p:PublishSingleFile=true
+          -p:SelfContained=true
+          -p:PublishTrimmed=false
+          --output artifacts/${{ matrix.rid }}
