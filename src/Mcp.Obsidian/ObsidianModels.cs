@@ -81,6 +81,21 @@ internal sealed record BrokenLink(
     string BrokenTarget,
     int? LineNumber);
 
+internal sealed record GraphNode(
+    string Path,
+    string Title,
+    int Depth,
+    string? Snippet);
+
+internal sealed record GraphEdge(
+    string FromPath,
+    string ToPath);
+
+internal sealed record GraphResult(
+    IReadOnlyList<GraphNode> Nodes,
+    IReadOnlyList<GraphEdge> Edges,
+    int MaxDepthReached);
+
 internal sealed record CanvasNode(
     string Id,
     string Type,
@@ -95,6 +110,14 @@ internal sealed record CanvasEdge(
 internal sealed record CanvasData(
     IReadOnlyList<CanvasNode> Nodes,
     IReadOnlyList<CanvasEdge> Edges);
+
+internal sealed record KanbanCard(string Text, bool Completed);
+
+internal sealed record KanbanColumn(string Name, IReadOnlyList<KanbanCard> Cards);
+
+internal sealed record KanbanBoard(
+    string Path,
+    IReadOnlyList<KanbanColumn> Columns);
 
 internal sealed record DuplicateTitleInfo(
     string Title,
@@ -129,6 +152,12 @@ internal sealed record BulkResult(
     int MatchedNoteCount,
     int UpdatedNoteCount,
     IReadOnlyList<BulkNoteResult> Notes);
+
+internal sealed record SemanticChunkInput(
+    string Path,
+    int ChunkIndex,
+    string Text,
+    string Snippet);
 
 internal sealed record NoteSnapshot(
     string Path,

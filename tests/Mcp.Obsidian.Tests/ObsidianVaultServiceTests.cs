@@ -225,6 +225,49 @@ public sealed class ObsidianVaultServiceTests
     }
 
     [Fact]
+    public async Task ReadKanban_ParsesColumnsAndCards()
+    {
+        var client = CreateClient(
+            new Dictionary<string, string[]>
+            {
+                ["/"] = ["board.md"],
+            },
+            new Dictionary<string, FakeNote>
+            {
+                ["board.md"] = new(
+                    """
+                    ---
+                    kanban-plugin: basic
+                    ---
+
+                    ## Todo
+
+                    - [ ] Card one
+                    - [x] Done card
+
+                    ## Doing
+
+                    - [ ] Card two
+
+                    %% kanban:settings %%
+                    ```{"kanban-plugin":"basic"}```
+                    %%
+                    """),
+            });
+
+        var service = new ObsidianVaultService(client, CreateSettings());
+
+        var board = await service.ReadKanbanAsync("board.md", CancellationToken.None);
+
+        Assert.Equal(2, board.Columns.Count);
+        Assert.Equal("Todo", board.Columns[0].Name);
+        Assert.Equal("Card one", board.Columns[0].Cards[0].Text);
+        Assert.False(board.Columns[0].Cards[0].Completed);
+        Assert.True(board.Columns[0].Cards[1].Completed);
+        Assert.Equal("Card two", board.Columns[1].Cards[0].Text);
+    }
+
+    [Fact]
     public async Task VaultHealth_ComposesStatsBrokenLinksDuplicatesAndLargeFiles()
     {
         var client = CreateClient(
@@ -251,6 +294,59 @@ public sealed class ObsidianVaultServiceTests
         Assert.Contains(health.DuplicateTitles, item => item.Title == "Launch");
         Assert.Contains("Projects/Launch.md", health.LargeFiles.Select(static item => item.Path));
         Assert.Contains(health.Tags, item => item.Tag == "ops");
+    }
+
+    [Fact]
+    public async Task GraphTraverse_ReturnsNodesUpToMaxDepth()
+    {
+        var client = CreateClient(
+            new Dictionary<string, string[]>
+            {
+                ["/"] = ["A.md", "B.md", "C.md", "D.md"],
+            },
+            new Dictionary<string, FakeNote>
+            {
+                ["A.md"] = new("See [[B]]."),
+                ["B.md"] = new("See [[C]]."),
+                ["C.md"] = new("See [[D]]."),
+                ["D.md"] = new("End."),
+            });
+
+        var service = new ObsidianVaultService(client, CreateSettings());
+
+        var result = await service.GraphTraverseAsync("A", maxDepth: 2, "both", false, CancellationToken.None);
+
+        Assert.Contains(result.Nodes, node => node.Title == "A");
+        Assert.Contains(result.Nodes, node => node.Title == "B");
+        Assert.Contains(result.Nodes, node => node.Title == "C");
+        Assert.DoesNotContain(result.Nodes, node => node.Title == "D");
+        Assert.Equal(2, result.MaxDepthReached);
+    }
+
+    [Fact]
+    public async Task GraphTraverse_IncomingDirectionFindsParent()
+    {
+        var client = CreateClient(
+            new Dictionary<string, string[]>
+            {
+                ["/"] = ["A.md", "B.md", "C.md", "D.md"],
+            },
+            new Dictionary<string, FakeNote>
+            {
+                ["A.md"] = new("See [[B]]."),
+                ["B.md"] = new("See [[C]]."),
+                ["C.md"] = new("See [[D]]."),
+                ["D.md"] = new("End."),
+            });
+
+        var service = new ObsidianVaultService(client, CreateSettings());
+
+        var result = await service.GraphTraverseAsync("C", maxDepth: 1, "incoming", false, CancellationToken.None);
+
+        Assert.Contains(result.Nodes, node => node.Title == "C");
+        Assert.Contains(result.Nodes, node => node.Title == "B");
+        Assert.DoesNotContain(result.Nodes, node => node.Title == "A");
+        Assert.Contains(result.Edges, edge => edge.FromPath == "B.md" && edge.ToPath == "C.md");
     }
 
     [Fact]
@@ -324,6 +420,34 @@ public sealed class ObsidianVaultServiceTests
         Assert.Equal("ops", client.Notes["Projects/Launch.md"].Frontmatter?["owner"]?.GetValue<string>());
         Assert.Equal("draft", client.Notes["Projects/Retro.md"].Frontmatter?["status"]?.GetValue<string>());
         Assert.Null(client.Notes["Notes/Inbox.md"].Frontmatter?["owner"]);
+    }
+
+    [Fact]
+    public async Task FilesystemClient_ListFiles_ReturnsVaultEntries()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"mcp-obsidian-tests-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            File.WriteAllText(Path.Combine(tempDir, "Inbox.md"), "# Inbox");
+            File.WriteAllText(Path.Combine(tempDir, "Projects.md"), "# Projects");
+
+            var client = new ObsidianFilesystemClient(tempDir);
+
+            var result = await client.ListFilesAsync(null, CancellationToken.None);
+
+            var paths = (result as JsonArray)?
+                .Select(static item => item?["path"]?.GetValue<string>())
+                .OfType<string>()
+                .ToArray() ?? [];
+            Assert.Contains("Inbox.md", paths);
+            Assert.Contains("Projects.md", paths);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
     }
 
     private static FakeObsidianClient CreateClient(

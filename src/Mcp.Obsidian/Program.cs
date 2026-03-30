@@ -10,11 +10,28 @@ internal static class Program
         try
         {
             var settings = ObsidianSettings.Load(args);
-            var client = new ObsidianRestClient(settings);
+            IObsidianClient client = string.IsNullOrWhiteSpace(settings.VaultPath)
+                ? new ObsidianRestClient(settings)
+                : new ObsidianFilesystemClient(settings.VaultPath);
             var toolRegistry = new ObsidianToolRegistry(client, settings);
-            var server = new McpServer(toolRegistry, Console.OpenStandardInput(), Console.OpenStandardOutput(), Console.Error);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+            var tasks = new List<Task>();
 
-            await server.RunAsync(CancellationToken.None);
+            var server = new McpServer(toolRegistry, Console.OpenStandardInput(), Console.OpenStandardOutput(), Console.Error);
+            tasks.Add(server.RunAsync(cts.Token));
+
+            if (settings.HttpPort is { } port)
+            {
+                var httpServer = new McpHttpServer(toolRegistry, port);
+                tasks.Add(httpServer.RunAsync(cts.Token));
+            }
+
+            await Task.WhenAll(tasks);
+            if (client is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+
             return 0;
         }
         catch (Exception exception)

@@ -5,18 +5,19 @@
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![MCP Standard](https://img.shields.io/badge/MCP-1.0-orange)
 
-**Mcp.Obsidian** is a .NET 10 Model Context Protocol (MCP) server that bridges AI agents (Claude, Gemini, etc.) with your local Obsidian vault.
+**Mcp.Obsidian** is a .NET 10 Model Context Protocol (MCP) server that bridges AI agents (Claude, Gemini, Cursor, and more) with your local Obsidian vault.
 
 It allows LLMs to read, search, and edit your notes safely using the [Obsidian Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api), keeping your knowledge base local-first while enabling AI automation.
 
-This server is designed to feel much closer to a real Obsidian operator than a thin note CRUD wrapper. It can work with normal vault files, the active note, periodic notes, command execution, vault queries, backlink-aware analysis, and workspace scaffolding.
+This 33-tool server is designed to feel much closer to a real Obsidian operator than a thin note CRUD wrapper. It can work with normal vault files, the active note, periodic notes, command execution, vault queries, backlink-aware analysis, workspace scaffolding, kanban boards, and MCP resources.
 
 ## What Makes It Different
 
 - It is not limited to file CRUD. It can reason about headings, links, backlinks, periodic notes, and Obsidian commands.
 - It exposes higher-level agent workflows like smart append, daily note automation, and workspace scaffolding.
-- It stays local-first by talking only to your running Obsidian instance through the Local REST API plugin.
-- It is built for any MCP-compatible client that can launch a local process over stdio.
+- It supports both Obsidian REST mode and direct filesystem mode for offline vault access.
+- It speaks MCP over stdio and HTTP/SSE so more MCP clients can attach cleanly.
+- It exposes vault notes as MCP Resources, not just tools.
 
 ### Why this is useful
 
@@ -24,7 +25,7 @@ This server is designed to feel much closer to a real Obsidian operator than a t
 - Give Claude Desktop, Cursor, Gemini, and other MCP tools structured access to your Obsidian vault.
 - Avoid brittle copy-paste workflows by letting agents search, read, create, and update notes directly.
 - Build on top of the widely used Obsidian Local REST API instead of inventing a custom plugin.
-- Cover higher-level workflows like daily notes, heading-aware appends, command execution, and workspace bootstrapping.
+- Cover higher-level workflows like daily notes, heading-aware appends, command execution, kanban parsing, and workspace bootstrapping.
 
 > [!NOTE]
 > A demo image is not included in this repository yet, so the placeholder caption has been removed for now.
@@ -46,6 +47,12 @@ graph LR
 ---
 
 ## 🚀 Getting Started
+
+### ✨ Choose Your Mode
+
+- `REST mode`: Connect through the Obsidian Local REST API plugin while Obsidian is running.
+- `Filesystem mode`: Point the server at a vault folder with `--vault-path=/absolute/path/to/vault` and work without Obsidian running.
+- `HTTP mode`: Add `--http-port=7474` to expose MCP over `http://localhost:7474/mcp` with SSE at `http://localhost:7474/sse`.
 
 ### 1. Prerequisites
 
@@ -99,6 +106,12 @@ Update `appsettings.json` in the repo root with your Obsidian connection details
 
 ```
 
+For filesystem mode, you do not need an API key:
+
+```bash
+dotnet run --project src/Mcp.Obsidian/Mcp.Obsidian.csproj -- --vault-path=/absolute/path/to/vault
+```
+
 You can also configure the server via environment variables:
 
 ```bash
@@ -130,6 +143,15 @@ dotnet publish src/Mcp.Obsidian/Mcp.Obsidian.csproj \
   -p:PublishSingleFile=true \
   -p:SelfContained=true \
   -o ./artifacts/linux-x64
+```
+
+Publish a NativeAOT binary with ONNX semantic search disabled:
+
+```bash
+dotnet publish src/Mcp.Obsidian/Mcp.Obsidian.csproj \
+  -c Release \
+  -r osx-arm64 \
+  -p:AOT=true
 ```
 
 ### 4. Connect It To Your MCP Client
@@ -186,6 +208,16 @@ Windows example:
 }
 ```
 
+#### HTTP MCP Client
+
+Launch the server with an HTTP port:
+
+```bash
+dotnet run --project src/Mcp.Obsidian/Mcp.Obsidian.csproj -- --http-port=7474
+```
+
+Then send MCP requests to `http://localhost:7474/mcp`.
+
 ### 5. Quick Start Checklist
 
 1. Start Obsidian and make sure the `Local REST API` plugin is enabled.
@@ -194,6 +226,7 @@ Windows example:
 4. Add the MCP server entry to your client config.
 5. Restart your MCP client.
 6. Ask the client to call `obsidian_list_files` or `obsidian_search` as a smoke test.
+7. If your client supports MCP Resources, try `resources/list` and `resources/read`.
 
 ### 6. First Prompts To Try
 
@@ -209,15 +242,20 @@ Windows example:
 
 This MCP server now covers a much larger slice of what a human can do manually in Obsidian:
 
+- Work locally through either the Obsidian REST plugin or direct filesystem access.
+- Speak MCP over both stdio and HTTP/SSE.
+- Expose vault notes as MCP Resources with `obsidian://vault/...` URIs.
 - Work across three note scopes: vault files, the active note, and periodic notes.
 - Read notes as markdown, parsed note JSON, or a document map for structural reasoning.
 - Create, replace, append, patch, and delete notes instead of stopping at read-only automation.
+- Cover semantic search, tag listing, note moves, vault stats, canvas reads, kanban parsing, task extraction, and graph traversal.
 - Append under a specific heading path with `obsidian_smart_append`.
 - Patch headings, blocks, or frontmatter fields with fine-grained target operations.
 - Run simple text search plus richer Dataview DQL and JsonLogic vault queries.
 - Inspect outgoing links, backlinks, and plain-text mention opportunities.
 - Open notes in the desktop UI and execute Obsidian commands from MCP.
 - Scaffold workspace folder structures with index notes for new projects or clients.
+- Offer a NativeAOT publish path when you want a smaller binary and can skip ONNX semantic search.
 
 ## 🛠 Available Tools
 
@@ -244,6 +282,18 @@ This MCP server now covers a much larger slice of what a human can do manually i
 | `obsidian_list_commands` | Lists available Obsidian commands. |
 | `obsidian_execute_command` | Executes an Obsidian command by id. |
 | `obsidian_scaffold_workspace` | Scaffolds a new folder-based workspace with index notes. |
+| `obsidian_list_all_tags` | Lists all tags found across the vault. |
+| `obsidian_move_note` | Moves a note and can rewrite matching wikilinks. |
+| `obsidian_get_vault_stats` | Computes vault-wide note, folder, size, tag, orphan, and recent activity stats. |
+| `obsidian_batch_read` | Reads many notes with optional content and frontmatter. |
+| `obsidian_extract_tasks` | Extracts markdown tasks across the vault or a folder. |
+| `obsidian_list_broken_links` | Finds unresolved wikilinks in the vault. |
+| `obsidian_graph_traverse` | Traverses linked notes outward, inward, or both up to a depth limit. |
+| `obsidian_read_canvas` | Reads an Obsidian canvas file and returns nodes and edges. |
+| `obsidian_read_kanban` | Parses an Obsidian Kanban board into columns and cards. |
+| `obsidian_vault_health` | Builds a vault health report with broken links, duplicates, orphans, and large files. |
+| `obsidian_search_semantic` | Ranks vault notes using lexical plus semantic chunk relevance. |
+| `obsidian_bulk_frontmatter` | Applies frontmatter updates to many notes filtered by folder and/or tag. |
 
 ---
 
@@ -259,6 +309,8 @@ This MCP server now covers a much larger slice of what a human can do manually i
 - "Run a Dataview query for all open tasks tagged `#hn-launch`."
 - "Show me notes that already link to `Projects/HackerNews Launch.md` before creating a duplicate."
 - "Create a fresh client workspace with Inbox, Projects, Resources, Archive, and Daily sections."
+- "Read my `Planning/Board.md` Kanban board and summarize cards by column."
+- "List vault resources and read `obsidian://vault/Inbox.md` as passive MCP context."
 - "Execute the Obsidian command for opening the command palette or templater workflow."
 
 ---
@@ -267,33 +319,36 @@ This MCP server now covers a much larger slice of what a human can do manually i
 
 - `dotnet build src/Mcp.Obsidian/Mcp.Obsidian.csproj`
 - `dotnet test tests/Mcp.Obsidian.Tests/Mcp.Obsidian.Tests.csproj`
+- `dotnet publish src/Mcp.Obsidian/Mcp.Obsidian.csproj -r linux-x64 -c Release`
 - GitHub Actions release workflow builds release assets for `linux-x64`, `linux-arm64`, `win-x64`, and `osx-arm64`
+- GitHub Actions CI runs automatically on every push to `main`
 
-The test suite covers the markdown reasoning helpers behind link extraction, heading-path parsing, smart append planning, and backlink analysis.
+The test suite covers markdown helpers, graph traversal, semantic ranking fallback behavior, filesystem mode, kanban parsing, and backlink analysis.
 
 ## 📦 Releases
 
-This repository includes a GitHub Actions workflow at [.github/workflows/release.yml](/Users/sarvesh/Mcp.Obsidian/.github/workflows/release.yml) that:
+This repository includes GitHub Actions workflows at [.github/workflows/ci.yml](/Users/sarvesh/Mcp.Obsidian/.github/workflows/ci.yml) and [.github/workflows/release.yml](/Users/sarvesh/Mcp.Obsidian/.github/workflows/release.yml) that:
 
-- runs tests
-- publishes single-file self-contained binaries
-- packages artifacts for Linux x64, Linux arm64, Windows x64, and macOS Apple Silicon
-- uploads those assets to a GitHub Release when you push a tag like `v0.1.0`
+- ✅ run tests on `main`
+- 📦 publish single-file self-contained binaries
+- 🖥 package artifacts for Linux x64, Linux arm64, Windows x64, and macOS Apple Silicon
+- 🚀 upload those assets to a GitHub Release when you push a tag like `v0.5.0`
 
 To cut a release:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.5.0
+git push origin v0.5.0
 ```
 
 ---
 
 ## 🛡 Security & Permissions
 
-* **Local Execution:** This server runs entirely on your machine. No data is sent to a third-party cloud other than the LLM provider you are already using (e.g., Anthropic).
+* **Local Execution:** This server runs entirely on your machine. No data is sent to a third-party cloud other than the LLM provider you are already using.
 * **HTTPS:** The Local REST API uses self-signed certificates. The `VerifySsl: false` setting is required unless you configure local trust.
-* **Scoped Access:** The server can only access the vault where the Local REST API plugin is active.
+* **Scoped Access:** In REST mode, the server can only access the vault where the Local REST API plugin is active.
+* **Filesystem Mode:** In `--vault-path` mode, the server accesses the vault folder directly and blocks path traversal outside the configured root.
 * **Configuration:** Keep `appsettings.json` local to your machine and never commit your Obsidian API key.
 
 ---
@@ -301,10 +356,13 @@ git push origin v0.1.0
 ## 🔧 Troubleshooting
 
 - If the MCP client cannot connect, make sure Obsidian is running and the Local REST API plugin is enabled.
+- If you are using filesystem mode, make sure `--vault-path` points to the vault root and that the process can read that folder.
+- If you are using HTTP mode, make sure the chosen `--http-port` is free and send MCP POST requests to `/mcp`.
 - If requests fail with authentication errors, re-copy the API key from Obsidian into `appsettings.json`.
 - If TLS validation fails, keep `VerifySsl` set to `false` unless you have explicitly trusted the local certificate.
 - If your MCP client cannot launch `dotnet run`, publish the app first and point the client at the binary in `artifacts/obsidian-mcp`.
 - If a patch against a heading fails, read the note as `document_map` first to inspect the exact heading path the API expects.
+- If Linux NativeAOT publish fails on macOS, build that RID on a Linux runner or native Linux machine instead of cross-linking locally.
 
 ---
 
@@ -317,6 +375,7 @@ git push origin v0.1.0
 * [x] **Daily Note Helper:** Shorthand tools for modifying the current daily note.
 * [x] **Command Automation:** List and execute Obsidian commands from MCP.
 * [x] **Workspace Scaffolding:** Bootstrap project or client workspaces with structured folders and notes.
+* [x] **Graph traversal (BFS/DFS):** Traverse incoming and outgoing note relationships from a starting note.
 * [ ] **Templates and Capture Flows:** First-class helpers around templater-style workflows.
 * [ ] **Graph-Aware Planning:** Deeper link graph reasoning before large note rewrites.
 

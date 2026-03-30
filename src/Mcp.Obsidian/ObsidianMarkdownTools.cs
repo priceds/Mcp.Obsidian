@@ -44,6 +44,18 @@ internal static partial class ObsidianMarkdownTools
         return links;
     }
 
+    public static IReadOnlyList<string> ExtractWikiLinks(string markdown)
+    {
+        return ExtractLinks(markdown)
+            .OfType<JsonObject>()
+            .Where(static link => link["type"]?.GetValue<string>() == "wikilink")
+            .Select(static link => link["target"]?.GetValue<string>() ?? string.Empty)
+            .Where(static target => target.Length > 0)
+            .Select(static target => target.Split('|', 2)[0].Trim())
+            .Where(static target => target.Length > 0)
+            .ToArray();
+    }
+
     public static JsonArray ParseHeadingPaths(string markdown)
     {
         var results = new JsonArray();

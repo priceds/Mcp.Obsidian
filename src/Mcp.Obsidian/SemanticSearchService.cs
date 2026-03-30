@@ -1,12 +1,16 @@
-using System.Collections.Concurrent;
-using System.Numerics.Tensors;
 using System.Text;
+#if ONNX_ENABLED
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using Microsoft.Data.Sqlite;
 using Microsoft.ML.OnnxRuntime;
+#endif
 
 namespace Mcp.Obsidian;
 
 internal sealed class SemanticSearchService : IDisposable
 {
+#if ONNX_ENABLED
     private static readonly string[] PreferredModelNames =
     [
         "model_q4f16.onnx",
@@ -14,12 +18,18 @@ internal sealed class SemanticSearchService : IDisposable
         "model_fp16.onnx",
         "model.onnx",
     ];
+#endif
 
     private readonly SemanticSearchSettings _settings;
+#if ONNX_ENABLED
     private readonly Lock _lock = new();
+    private readonly Lock _dbLock = new();
     private InferenceSession? _session;
     private BertWordPieceTokenizer? _tokenizer;
+    private SqliteConnection? _db;
     private bool _initializationAttempted;
+    private string? _modelDirectory;
+#endif
 
     public SemanticSearchService(SemanticSearchSettings settings)
     {
@@ -28,46 +38,80 @@ internal sealed class SemanticSearchService : IDisposable
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_settings.ModelDirectory);
 
-    public Task<float[]?> ScoreTextsAsync(string query, IReadOnlyList<string> texts, CancellationToken cancellationToken)
+    public Task<float[]?> ScoreChunksAsync(string query, IReadOnlyList<SemanticChunkInput> chunks, CancellationToken cancellationToken)
     {
         if (!IsConfigured)
         {
             return Task.FromResult<float[]?>(null);
         }
 
+#if ONNX_ENABLED
         return Task.Run(() =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            EnsureInitialized();
-
-            var queryEmbedding = EncodeEmbedding(query);
-            var scores = new float[texts.Count];
-
-            Parallel.ForEach(Enumerable.Range(0, texts.Count), new ParallelOptions { CancellationToken = cancellationToken }, index =>
+            try
             {
-                var embedding = EncodeEmbedding(texts[index]);
-                scores[index] = CosineSimilarity(queryEmbedding, embedding);
-            });
+                cancellationToken.ThrowIfCancellationRequested();
+                EnsureInitialized();
 
-            return (float[]?)scores;
+                var modelDirectory = _modelDirectory ?? throw new InvalidOperationException("Semantic model directory was not initialized.");
+                var db = GetDb(modelDirectory);
+                IndexChunks(db, chunks, cancellationToken);
+
+                var queryEmbedding = EncodeEmbedding(query);
+                var rows = LoadEmbeddings(db);
+                var currentKeys = chunks
+                    .Select(static chunk => (chunk.Path, chunk.ChunkIndex))
+                    .ToHashSet();
+                var scores = new float[chunks.Count];
+                var scoreIndex = new Dictionary<(string Path, int ChunkIndex), int>(chunks.Count);
+                for (var index = 0; index < chunks.Count; index++)
+                {
+                    scoreIndex[(chunks[index].Path, chunks[index].ChunkIndex)] = index;
+                }
+
+                foreach (var row in rows)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var key = (row.Path, row.ChunkIndex);
+                    if (!currentKeys.Contains(key) || !scoreIndex.TryGetValue(key, out var resultIndex))
+                    {
+                        continue;
+                    }
+
+                    scores[resultIndex] = CosineSimilarity(queryEmbedding, row.Embedding);
+                }
+
+                return (float[]?)scores;
+            }
+            catch
+            {
+                return null;
+            }
         }, cancellationToken);
+#else
+        return Task.FromResult<float[]?>(null);
+#endif
     }
 
     public void Dispose()
     {
+#if ONNX_ENABLED
+        _db?.Dispose();
         _session?.Dispose();
+#endif
     }
 
+#if ONNX_ENABLED
     private void EnsureInitialized()
     {
-        if (_session is not null && _tokenizer is not null)
+        if (_session is not null && _tokenizer is not null && _modelDirectory is not null)
         {
             return;
         }
 
         lock (_lock)
         {
-            if (_session is not null && _tokenizer is not null)
+            if (_session is not null && _tokenizer is not null && _modelDirectory is not null)
             {
                 return;
             }
@@ -78,14 +122,14 @@ internal sealed class SemanticSearchService : IDisposable
             }
 
             _initializationAttempted = true;
-            var modelDirectory = ResolveExistingDirectory(_settings.ModelDirectory!)
-                                 ?? throw new InvalidOperationException($"Semantic search model directory '{_settings.ModelDirectory}' was not found.");
-            var modelPath = ResolveModelPath(modelDirectory)
-                            ?? throw new InvalidOperationException($"No supported ONNX model file was found in '{modelDirectory}'.");
-            var vocabPath = Path.Combine(modelDirectory, "vocab.txt");
+            _modelDirectory = ResolveExistingDirectory(_settings.ModelDirectory!)
+                              ?? throw new InvalidOperationException($"Semantic search model directory '{_settings.ModelDirectory}' was not found.");
+            var modelPath = ResolveModelPath(_modelDirectory)
+                            ?? throw new InvalidOperationException($"No supported ONNX model file was found in '{_modelDirectory}'.");
+            var vocabPath = Path.Combine(_modelDirectory, "vocab.txt");
             if (!File.Exists(vocabPath))
             {
-                throw new InvalidOperationException($"Missing vocab.txt in semantic model directory '{modelDirectory}'.");
+                throw new InvalidOperationException($"Missing vocab.txt in semantic model directory '{_modelDirectory}'.");
             }
 
             var sessionOptions = new SessionOptions
@@ -96,6 +140,129 @@ internal sealed class SemanticSearchService : IDisposable
             _session = new InferenceSession(modelPath, sessionOptions);
             _tokenizer = new BertWordPieceTokenizer(vocabPath, Math.Clamp(_settings.MaxSequenceLength, 32, 512));
         }
+    }
+
+    private SqliteConnection GetDb(string modelDirectory)
+    {
+        if (_db is not null)
+        {
+            return _db;
+        }
+
+        lock (_dbLock)
+        {
+            if (_db is not null)
+            {
+                return _db;
+            }
+
+            var path = Path.Combine(modelDirectory, "semantic_index.db");
+            _db = new SqliteConnection($"Data Source={path}");
+            _db.Open();
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText =
+                """
+                CREATE TABLE IF NOT EXISTS chunk_embeddings (
+                    path      TEXT NOT NULL,
+                    chunk_idx INTEGER NOT NULL,
+                    hash      TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    snippet   TEXT NOT NULL,
+                    PRIMARY KEY (path, chunk_idx)
+                );
+                """;
+            cmd.ExecuteNonQuery();
+            return _db;
+        }
+    }
+
+    private void IndexChunks(SqliteConnection db, IReadOnlyList<SemanticChunkInput> chunks, CancellationToken cancellationToken)
+    {
+        var currentKeys = chunks
+            .Select(static chunk => (chunk.Path, chunk.ChunkIndex))
+            .ToHashSet();
+        DeleteStaleRows(db, currentKeys);
+
+        foreach (var chunk in chunks)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(chunk.Text)));
+            using var existingCommand = db.CreateCommand();
+            existingCommand.CommandText = "SELECT hash FROM chunk_embeddings WHERE path=@p AND chunk_idx=@i";
+            existingCommand.Parameters.AddWithValue("@p", chunk.Path);
+            existingCommand.Parameters.AddWithValue("@i", chunk.ChunkIndex);
+            var existingHash = existingCommand.ExecuteScalar() as string;
+            if (string.Equals(existingHash, hash, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var embedding = EncodeEmbedding(chunk.Text);
+            var embeddingBlob = MemoryMarshal.AsBytes<float>(embedding.AsSpan()).ToArray();
+
+            using var upsertCommand = db.CreateCommand();
+            upsertCommand.CommandText =
+                """
+                INSERT INTO chunk_embeddings (path, chunk_idx, hash, embedding, snippet)
+                VALUES (@p, @i, @h, @e, @s)
+                ON CONFLICT(path, chunk_idx) DO UPDATE SET hash=@h, embedding=@e, snippet=@s
+                """;
+            upsertCommand.Parameters.AddWithValue("@p", chunk.Path);
+            upsertCommand.Parameters.AddWithValue("@i", chunk.ChunkIndex);
+            upsertCommand.Parameters.AddWithValue("@h", hash);
+            upsertCommand.Parameters.Add("@e", SqliteType.Blob).Value = embeddingBlob;
+            upsertCommand.Parameters.AddWithValue("@s", chunk.Snippet);
+            upsertCommand.ExecuteNonQuery();
+        }
+    }
+
+    private static void DeleteStaleRows(SqliteConnection db, IReadOnlySet<(string Path, int ChunkIndex)> currentKeys)
+    {
+        var staleRows = new List<(string Path, int ChunkIndex)>();
+
+        using (var selectCommand = db.CreateCommand())
+        {
+            selectCommand.CommandText = "SELECT path, chunk_idx FROM chunk_embeddings";
+            using var reader = selectCommand.ExecuteReader();
+            while (reader.Read())
+            {
+                var key = (reader.GetString(0), reader.GetInt32(1));
+                if (!currentKeys.Contains(key))
+                {
+                    staleRows.Add(key);
+                }
+            }
+        }
+
+        foreach (var (path, chunkIndex) in staleRows)
+        {
+            using var deleteCommand = db.CreateCommand();
+            deleteCommand.CommandText = "DELETE FROM chunk_embeddings WHERE path=@p AND chunk_idx=@i";
+            deleteCommand.Parameters.AddWithValue("@p", path);
+            deleteCommand.Parameters.AddWithValue("@i", chunkIndex);
+            deleteCommand.ExecuteNonQuery();
+        }
+    }
+
+    private static IReadOnlyList<EmbeddingRow> LoadEmbeddings(SqliteConnection db)
+    {
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT path, chunk_idx, embedding, snippet FROM chunk_embeddings";
+        using var reader = command.ExecuteReader();
+
+        var rows = new List<EmbeddingRow>();
+        while (reader.Read())
+        {
+            var blob = (byte[])reader["embedding"];
+            rows.Add(new EmbeddingRow(
+                reader.GetString(0),
+                reader.GetInt32(1),
+                MemoryMarshal.Cast<byte, float>(blob.AsSpan()).ToArray(),
+                reader.GetString(3)));
+        }
+
+        return rows;
     }
 
     private float[] EncodeEmbedding(string text)
@@ -398,4 +565,7 @@ internal sealed class SemanticSearchService : IDisposable
     }
 
     private sealed record EncodedText(long[] InputIds, long[] AttentionMask, long[] TokenTypeIds);
+
+    private sealed record EmbeddingRow(string Path, int ChunkIndex, float[] Embedding, string Snippet);
+#endif
 }

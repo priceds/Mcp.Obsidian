@@ -182,9 +182,20 @@ internal sealed class ObsidianToolRegistry
                 ["completed"] = BoolProperty("Filter by completed or incomplete tasks."),
             })),
             Tool("obsidian_list_broken_links", "Find wikilinks that do not resolve to any note title in the vault.", Schema(new JsonObject())),
+            Tool("obsidian_graph_traverse", "BFS traversal from a start note through wikilinks. Returns connected nodes and edges up to a depth limit.", Schema(new JsonObject
+            {
+                ["startNote"] = StringProperty("Vault-relative path or title of the starting note."),
+                ["maxDepth"] = new JsonObject { ["type"] = "integer", ["description"] = "Max traversal depth. Default 2, max 5.", ["default"] = 2 },
+                ["direction"] = EnumProperty("Link direction to follow.", "outgoing", "incoming", "both"),
+                ["includeSnippet"] = new JsonObject { ["type"] = "boolean", ["description"] = "Include a 200-char content snippet per node." },
+            }, "startNote")),
             Tool("obsidian_read_canvas", "Read an Obsidian .canvas file and return its nodes and edges.", Schema(new JsonObject
             {
                 ["path"] = StringProperty("Vault-relative path to a .canvas file."),
+            }, "path")),
+            Tool("obsidian_read_kanban", "Parse an Obsidian Kanban plugin board file. Returns columns and cards with completion status.", Schema(new JsonObject
+            {
+                ["path"] = StringProperty("Vault-relative path to the .md Kanban board file."),
             }, "path")),
             Tool("obsidian_vault_health", "Generate a health report with vault stats, broken links, duplicate titles, orphan notes, large files, and tags.", Schema(new JsonObject())),
             Tool("obsidian_search_semantic", "Search the vault with chunked relevance ranking that blends lexical overlap, metadata signals, and fuzzy similarity.", Schema(new JsonObject
@@ -267,7 +278,16 @@ internal sealed class ObsidianToolRegistry
                     GetOptionalBool(arguments, "completed"),
                     cancellationToken), JsonOptions)),
                 "obsidian_list_broken_links" => Success(JsonSerializer.SerializeToNode(await _vaultService.ListBrokenLinksAsync(cancellationToken), JsonOptions)),
+                "obsidian_graph_traverse" => Success(JsonSerializer.SerializeToNode(await _vaultService.GraphTraverseAsync(
+                    GetRequiredString(arguments, "startNote"),
+                    Math.Min(GetOptionalInt(arguments, "maxDepth") ?? 2, 5),
+                    GetOptionalString(arguments, "direction") ?? "both",
+                    GetOptionalBool(arguments, "includeSnippet") ?? false,
+                    cancellationToken), JsonOptions)),
                 "obsidian_read_canvas" => Success(JsonSerializer.SerializeToNode(await _vaultService.ReadCanvasAsync(
+                    GetRequiredString(arguments, "path"),
+                    cancellationToken), JsonOptions)),
+                "obsidian_read_kanban" => Success(JsonSerializer.SerializeToNode(await _vaultService.ReadKanbanAsync(
                     GetRequiredString(arguments, "path"),
                     cancellationToken), JsonOptions)),
                 "obsidian_vault_health" => Success(JsonSerializer.SerializeToNode(await _vaultService.GetVaultHealthAsync(cancellationToken), JsonOptions)),
@@ -298,6 +318,51 @@ internal sealed class ObsidianToolRegistry
         {
             return McpToolCallResult.Error(exception.Message);
         }
+    }
+
+    public async Task<IReadOnlyList<string>> ListVaultPathsAsync(CancellationToken cancellationToken)
+    {
+        var pendingFolders = new Queue<string?>();
+        var visitedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var paths = new List<string>();
+        pendingFolders.Enqueue(null);
+
+        while (pendingFolders.Count > 0)
+        {
+            var folder = pendingFolders.Dequeue();
+            var normalizedFolder = string.IsNullOrWhiteSpace(folder) ? null : folder.Trim().Trim('/');
+            var dedupeKey = normalizedFolder ?? "/";
+            if (!visitedFolders.Add(dedupeKey))
+            {
+                continue;
+            }
+
+            var listing = await _client.ListFilesAsync(normalizedFolder, cancellationToken);
+            foreach (var entry in ParseListing(normalizedFolder, listing))
+            {
+                if (entry.IsDirectory)
+                {
+                    pendingFolders.Enqueue(entry.Path);
+                    continue;
+                }
+
+                if (entry.Path.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+                {
+                    paths.Add(entry.Path);
+                }
+            }
+        }
+
+        return paths
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public async Task<string> ReadNoteContentAsync(string path, CancellationToken cancellationToken)
+    {
+        var result = await _client.ReadResourceAsync(new ObsidianResource("vault", path), ObsidianReadFormat.Markdown, cancellationToken);
+        return result?.GetValue<string>() ?? string.Empty;
     }
 
     private async Task<McpToolCallResult> ReadResourceAsync(JsonObject arguments, CancellationToken cancellationToken)
@@ -887,6 +952,89 @@ internal sealed class ObsidianToolRegistry
         }
 
         return parsedDate;
+    }
+
+    private static IReadOnlyList<VaultEntry> ParseListing(string? folder, JsonNode? listing)
+    {
+        var results = new List<VaultEntry>();
+        if (listing is JsonArray array)
+        {
+            foreach (var item in array)
+            {
+                AddEntry(results, folder, item);
+            }
+
+            return results;
+        }
+
+        if (listing is JsonObject obj)
+        {
+            if (obj["files"] is JsonArray files)
+            {
+                foreach (var item in files)
+                {
+                    AddEntry(results, folder, item);
+                }
+            }
+            else
+            {
+                foreach (var property in obj)
+                {
+                    AddEntry(results, folder, property.Value);
+                }
+            }
+        }
+
+        return results;
+    }
+
+    private static void AddEntry(List<VaultEntry> results, string? folder, JsonNode? item)
+    {
+        switch (item)
+        {
+            case JsonValue value when value.TryGetValue<string>(out var text):
+            {
+                var normalized = NormalizeListedPath(folder, text);
+                var isDirectory = normalized.EndsWith("/", StringComparison.Ordinal);
+                results.Add(new VaultEntry(isDirectory ? normalized.TrimEnd('/') : normalized, isDirectory));
+                break;
+            }
+            case JsonObject obj:
+            {
+                var candidatePath = obj["path"]?.GetValue<string>()
+                                    ?? obj["name"]?.GetValue<string>()
+                                    ?? obj["filename"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(candidatePath))
+                {
+                    break;
+                }
+
+                var normalized = NormalizeListedPath(folder, candidatePath);
+                var type = obj["type"]?.GetValue<string>();
+                var isDirectory = string.Equals(type, "directory", StringComparison.OrdinalIgnoreCase) ||
+                                  string.Equals(type, "folder", StringComparison.OrdinalIgnoreCase) ||
+                                  obj["isDirectory"]?.GetValue<bool>() == true ||
+                                  normalized.EndsWith("/", StringComparison.Ordinal);
+                results.Add(new VaultEntry(isDirectory ? normalized.TrimEnd('/') : normalized, isDirectory));
+                break;
+            }
+        }
+    }
+
+    private static string NormalizeListedPath(string? folder, string item)
+    {
+        var trimmed = item.Trim();
+        if (trimmed.StartsWith("/", StringComparison.Ordinal))
+        {
+            trimmed = trimmed.TrimStart('/');
+        }
+
+        var baseFolder = string.IsNullOrWhiteSpace(folder) ? string.Empty : $"{folder.Trim().Trim('/')}/";
+        var combined = trimmed.StartsWith(baseFolder, StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(baseFolder)
+            ? trimmed
+            : $"{baseFolder}{trimmed}";
+
+        return combined.Replace('\\', '/').Trim();
     }
 }
 

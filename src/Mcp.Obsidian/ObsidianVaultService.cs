@@ -126,6 +126,128 @@ internal sealed partial class ObsidianVaultService
             .ToArray();
     }
 
+    public async Task<GraphResult> GraphTraverseAsync(
+        string startNote,
+        int maxDepth,
+        string direction,
+        bool includeSnippet,
+        CancellationToken cancellationToken)
+    {
+        var snapshots = await ReadVaultSnapshotsAsync(cancellationToken);
+        var titleIndex = BuildTitleIndex(snapshots);
+        var contentIndex = snapshots.ToDictionary(static snapshot => snapshot.Path, static snapshot => snapshot, StringComparer.OrdinalIgnoreCase);
+
+        var outgoing = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var snapshot in snapshots)
+        {
+            var resolved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var link in ObsidianMarkdownTools.ExtractWikiLinks(snapshot.Content))
+            {
+                if (titleIndex.TryGetValue(link, out var targetPath))
+                {
+                    resolved.Add(targetPath);
+                    continue;
+                }
+
+                var match = snapshots.FirstOrDefault(candidate =>
+                    candidate.Path.EndsWith($"{link}.md", StringComparison.OrdinalIgnoreCase) ||
+                    candidate.Path.EndsWith(link, StringComparison.OrdinalIgnoreCase));
+                if (match is not null)
+                {
+                    resolved.Add(match.Path);
+                }
+            }
+
+            outgoing[snapshot.Path] = resolved;
+        }
+
+        var incoming = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (from, targets) in outgoing)
+        {
+            foreach (var to in targets)
+            {
+                if (!incoming.TryGetValue(to, out var set))
+                {
+                    incoming[to] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                }
+
+                set.Add(from);
+            }
+        }
+
+        string? startPath = null;
+        if (contentIndex.ContainsKey(startNote))
+        {
+            startPath = startNote;
+        }
+        else if (titleIndex.TryGetValue(startNote, out var byTitle))
+        {
+            startPath = byTitle;
+        }
+        else
+        {
+            startPath = snapshots.FirstOrDefault(snapshot =>
+                snapshot.Path.EndsWith($"{startNote}.md", StringComparison.OrdinalIgnoreCase) ||
+                snapshot.Path.EndsWith(startNote, StringComparison.OrdinalIgnoreCase))?.Path;
+        }
+
+        if (startPath is null)
+        {
+            throw new InvalidOperationException($"Note not found: '{startNote}'");
+        }
+
+        var nodes = new List<GraphNode>();
+        var edges = new List<GraphEdge>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var queue = new Queue<(string Path, int Depth)>();
+        queue.Enqueue((startPath, 0));
+        visited.Add(startPath);
+        var maxReached = 0;
+
+        while (queue.Count > 0 && nodes.Count < 500)
+        {
+            var (current, depth) = queue.Dequeue();
+            maxReached = Math.Max(maxReached, depth);
+
+            var snapshot = contentIndex.GetValueOrDefault(current);
+            var title = snapshot is not null
+                ? Path.GetFileNameWithoutExtension(snapshot.Path)
+                : Path.GetFileNameWithoutExtension(current);
+            var snippet = includeSnippet && snapshot is not null
+                ? snapshot.Content.Length > 200 ? snapshot.Content[..200] : snapshot.Content
+                : null;
+
+            nodes.Add(new GraphNode(current, title, depth, snippet));
+            if (depth >= maxDepth)
+            {
+                continue;
+            }
+
+            IEnumerable<string> neighbors = direction switch
+            {
+                "outgoing" => outgoing.GetValueOrDefault(current) ?? [],
+                "incoming" => incoming.GetValueOrDefault(current) ?? [],
+                _ => (outgoing.GetValueOrDefault(current) ?? []).Concat(incoming.GetValueOrDefault(current) ?? []),
+            };
+
+            foreach (var neighbor in neighbors)
+            {
+                if (visited.Contains(neighbor))
+                {
+                    continue;
+                }
+
+                visited.Add(neighbor);
+                queue.Enqueue((neighbor, depth + 1));
+                edges.Add(direction == "incoming"
+                    ? new GraphEdge(neighbor, current)
+                    : new GraphEdge(current, neighbor));
+            }
+        }
+
+        return new GraphResult(nodes, edges, maxReached);
+    }
+
     public async Task<CanvasData> ReadCanvasAsync(string path, CancellationToken cancellationToken)
     {
         var markdown = (await _client.ReadResourceAsync(new ObsidianResource("vault", path), ObsidianReadFormat.Markdown, cancellationToken))?.GetValue<string>()
@@ -149,6 +271,57 @@ internal sealed partial class ObsidianVaultService
             .ToArray();
 
         return new CanvasData(nodes, edges);
+    }
+
+    public async Task<KanbanBoard> ReadKanbanAsync(string path, CancellationToken cancellationToken)
+    {
+        var markdown = (await _client.ReadResourceAsync(
+                new ObsidianResource("vault", path),
+                ObsidianReadFormat.Markdown,
+                cancellationToken))
+            ?.GetValue<string>() ?? throw new InvalidOperationException($"Could not read '{path}'.");
+
+        var columns = new List<KanbanColumn>();
+        KanbanColumn? current = null;
+        var cards = new List<KanbanCard>();
+
+        foreach (var rawLine in markdown.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (line.StartsWith("%% kanban:settings", StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            if (line.StartsWith("## ", StringComparison.Ordinal))
+            {
+                if (current is not null)
+                {
+                    columns.Add(current with { Cards = cards.ToArray() });
+                }
+
+                current = new KanbanColumn(line[3..].Trim(), []);
+                cards = [];
+                continue;
+            }
+
+            if (current is not null && line.StartsWith("- [", StringComparison.Ordinal) && line.Length > 6)
+            {
+                var completed = line[3] is 'x' or 'X';
+                var text = line[6..].Trim();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    cards.Add(new KanbanCard(text, completed));
+                }
+            }
+        }
+
+        if (current is not null)
+        {
+            columns.Add(current with { Cards = cards.ToArray() });
+        }
+
+        return new KanbanBoard(path, columns);
     }
 
     public async Task<HealthReport> GetVaultHealthAsync(CancellationToken cancellationToken)
@@ -218,7 +391,10 @@ internal sealed partial class ObsidianVaultService
             ? 1d
             : chunks.Average(static chunk => Math.Max(1, chunk.TokenCount));
         var documentFrequencies = BuildDocumentFrequencies(chunks);
-        var embeddingScores = await _semanticSearch.ScoreTextsAsync(query, chunks.Select(static chunk => chunk.Text).ToArray(), cancellationToken);
+        var chunkInputs = chunks
+            .Select(static chunk => new SemanticChunkInput(chunk.Path, chunk.Index, chunk.Text, chunk.Text.Length > 200 ? chunk.Text[..200] : chunk.Text))
+            .ToArray();
+        var embeddingScores = await _semanticSearch.ScoreChunksAsync(query, chunkInputs, cancellationToken);
         var results = new List<SemanticResult>();
 
         foreach (var noteGroup in chunks.GroupBy(static chunk => chunk.Path, StringComparer.OrdinalIgnoreCase))
@@ -571,6 +747,17 @@ internal sealed partial class ObsidianVaultService
         }
 
         return counts;
+    }
+
+    private static Dictionary<string, string> BuildTitleIndex(IEnumerable<NoteSnapshot> snapshots)
+    {
+        return snapshots
+            .GroupBy(static snapshot => Path.GetFileNameWithoutExtension(snapshot.Path).Trim(), StringComparer.OrdinalIgnoreCase)
+            .Where(static group => group.Count() == 1)
+            .ToDictionary(
+                static group => group.Key,
+                static group => group.Single().Path,
+                StringComparer.OrdinalIgnoreCase);
     }
 
     private static IEnumerable<SemanticChunk> BuildSemanticChunks(NoteSnapshot snapshot)

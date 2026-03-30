@@ -75,6 +75,10 @@ internal sealed class McpServer
                         {
                             ["listChanged"] = false,
                         },
+                        ["resources"] = new JsonObject
+                        {
+                            ["listChanged"] = false,
+                        },
                     },
                     ["serverInfo"] = new JsonObject
                     {
@@ -119,6 +123,19 @@ internal sealed class McpServer
                     ["isError"] = result.IsError,
                     ["structuredContent"] = result.StructuredContent,
                 }, cancellationToken);
+                break;
+            case "resources/list":
+                await WriteResultAsync(id, await BuildResourceListAsync(cancellationToken), cancellationToken);
+                break;
+            case "resources/read":
+                var resourceUri = parameters["uri"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(resourceUri))
+                {
+                    await WriteErrorAsync(id, -32602, "Missing uri parameter.", cancellationToken);
+                    return;
+                }
+
+                await WriteResultAsync(id, await ReadResourceByUriAsync(resourceUri, cancellationToken), cancellationToken);
                 break;
             default:
                 if (id is not null)
@@ -244,5 +261,53 @@ internal sealed class McpServer
         await _output.WriteAsync(header, cancellationToken);
         await _output.WriteAsync(body, cancellationToken);
         await _output.FlushAsync(cancellationToken);
+    }
+
+    private async Task<JsonObject> BuildResourceListAsync(CancellationToken cancellationToken)
+    {
+        var files = await _toolRegistry.ListVaultPathsAsync(cancellationToken);
+        var resources = new JsonArray();
+        foreach (var path in files)
+        {
+            resources.Add(new JsonObject
+            {
+                ["uri"] = $"obsidian://vault/{path}",
+                ["name"] = Path.GetFileNameWithoutExtension(path),
+                ["mimeType"] = "text/markdown",
+            });
+        }
+
+        return new JsonObject { ["resources"] = resources };
+    }
+
+    private async Task<JsonObject> ReadResourceByUriAsync(string uri, CancellationToken cancellationToken)
+    {
+        const string prefix = "obsidian://vault/";
+        if (!uri.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return new JsonObject
+            {
+                ["error"] = new JsonObject
+                {
+                    ["code"] = -32602,
+                    ["message"] = "Unsupported URI scheme.",
+                },
+            };
+        }
+
+        var path = uri[prefix.Length..];
+        var content = await _toolRegistry.ReadNoteContentAsync(path, cancellationToken);
+        return new JsonObject
+        {
+            ["contents"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["uri"] = uri,
+                    ["mimeType"] = "text/markdown",
+                    ["text"] = content,
+                },
+            },
+        };
     }
 }

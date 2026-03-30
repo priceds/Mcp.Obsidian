@@ -10,6 +10,10 @@ internal sealed class ObsidianSettings
 
     public bool VerifySsl { get; init; } = false;
 
+    public string? VaultPath { get; init; }
+
+    public int? HttpPort { get; init; }
+
     public SemanticSearchSettings SemanticSearch { get; init; } = new();
 
     public static ObsidianSettings Load(string[] args)
@@ -34,11 +38,21 @@ internal sealed class ObsidianSettings
             section: obsidianSection,
             propertyName: "ApiKey",
             fallback: null);
+        var vaultPath = args.FirstOrDefault(static argument => argument.StartsWith("--vault-path=", StringComparison.OrdinalIgnoreCase))
+            ?["--vault-path=".Length..]
+            ?? Environment.GetEnvironmentVariable("OBSIDIAN__VAULTPATH");
+        var httpPortArg = args.FirstOrDefault(static argument => argument.StartsWith("--http-port=", StringComparison.OrdinalIgnoreCase))
+            ?["--http-port=".Length..];
+        var httpPort = httpPortArg is not null && int.TryParse(httpPortArg, out var parsedHttpPort)
+            ? parsedHttpPort
+            : int.TryParse(Environment.GetEnvironmentVariable("MCP_HTTP_PORT"), out var environmentHttpPort)
+                ? environmentHttpPort
+                : (int?)null;
 
-        if (string.IsNullOrWhiteSpace(apiKey))
+        if (string.IsNullOrWhiteSpace(apiKey) && string.IsNullOrWhiteSpace(vaultPath))
         {
             throw new InvalidOperationException(
-                "Missing Obsidian API key. Set OBSIDIAN__APIKEY or provide Obsidian:ApiKey in appsettings.json.");
+                "Missing Obsidian API key. Set OBSIDIAN__APIKEY or provide Obsidian:ApiKey in appsettings.json, or pass --vault-path for filesystem mode.");
         }
 
         var verifySsl = GetBoolSetting(
@@ -51,8 +65,10 @@ internal sealed class ObsidianSettings
         return new ObsidianSettings
         {
             BaseUrl = baseUrl.TrimEnd('/'),
-            ApiKey = apiKey,
+            ApiKey = apiKey ?? string.Empty,
             VerifySsl = verifySsl,
+            VaultPath = string.IsNullOrWhiteSpace(vaultPath) ? null : Path.GetFullPath(vaultPath),
+            HttpPort = httpPort,
             SemanticSearch = new SemanticSearchSettings
             {
                 ModelDirectory = GetOptionalSetting("SEMANTICSEARCH__MODELDIRECTORY", semanticSection, "ModelDirectory"),
